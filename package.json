@@ -1,0 +1,17 @@
+{
+  "name": "warms-chat",
+  "version": "1.0.0",
+  "description": "A private Discord-style chat for friends, with accounts and roles",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "nodemailer": "^10.1.0",
+    "ws": "^8.18.0"
+  }
+}

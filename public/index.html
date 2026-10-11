@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="auth" class="auth hidden">
+    <form id="authForm" class="auth-card" autocomplete="on">
+      <h1 id="authTitle">Welcome back!</h1>
+      <p id="authSub" class="auth-sub">We're so excited to see you again!</p>
+      <p id="authNote" class="auth-note hidden"></p>
+      <label>USERNAME<input id="authUser" name="username" autocomplete="username" maxlength="24" required></label>
+      <label>PASSWORD<input id="authPass" name="password" type="password" autocomplete="current-password" required></label>
+      <div id="authErr" class="auth-err"></div>
+      <button id="authBtn" class="btn primary" type="submit">Log In</button>
+      <p class="auth-switch"><span id="authSwitchText">Need an account?</span> <a href="#" id="authSwitch">Register</a></p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <nav class="rail">
+      <div class="rail-home" title="Home">&#9786;</div>
+      <div id="onlineCount" class="rail-online"></div>
+      <button id="railAnn" class="rail-chat rail-ann" type="button" title="Announcements (only the Owner posts)"></button>
+      <div class="rail-sep"></div>
+      <div id="railChats" class="rail-chats"></div>
+      <button id="railAdd" class="rail-add hidden" type="button" title="New space">＋</button>
+    </nav>
+
+    <aside class="side">
+      <header class="side-head"><span id="serverName"></span><span class="chev">&#8964;</span></header>
+      <div class="side-scroll">
+        <div class="cat"><span>TEXT CHANNELS</span><button id="addChannel" class="icon-btn hidden" title="Create channel">+</button></div>
+        <div id="channelList"></div>
+        <button id="newChat" class="newchat hidden" type="button"><span>＋</span> New chat</button>
+        <div id="voiceSection"><div class="cat voice"><span>VOICE CHANNELS</span></div>
+        <div id="voiceList" class="voice-list"></div></div>
+        <button id="reportBtn" class="reportlink" type="button">Report a problem</button>
+      </div>
+      <div id="voiceBar" class="voicebar hidden"></div>
+      <footer class="userpanel">
+        <div id="meAvatar" class="avatar"></div>
+        <div class="me-text"><div id="meName" class="me-name"></div><div id="meRole" class="me-role"></div></div>
+        <button id="ownerBtn" class="icon-btn owner-btn hidden" title="Owner panel">&#9819;</button>
+        <button id="staffBtn" class="icon-btn hidden" title="Staff panel">&#128737;</button>
+        <button id="adminBtn" class="icon-btn hidden" title="Admin panel">&#9889;</button>
+        <button id="settingsBtn" class="icon-btn" title="Settings">&#9881;</button>
+      </footer>
+    </aside>
+
+    <main class="main">
+      <header class="main-head"><span class="hash">#</span><span id="channelTitle"></span></header>
+      <div id="messages" class="messages"></div>
+      <div class="composer-wrap">
+        <div id="replyBar" class="replybar hidden"></div>
+        <div id="pending" class="pending hidden"></div>
+        <div class="composer">
+          <button id="attachBtn" class="attach" title="Upload an image">&#8613;</button>
+          <input id="fileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+          <input id="msgInput" placeholder="Message" maxlength="2000" autocomplete="off">
+        </div>
+        <div id="typing" class="typing">&nbsp;</div>
+      </div>
+    </main>
+
+    <aside id="members" class="members"></aside>
+  </div>
+
+  <div id="banner" class="banner hidden" role="status"></div>
+  <div id="overlay" class="overlay hidden"></div>
+  <div id="popover" class="popover hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
