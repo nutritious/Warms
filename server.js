@@ -742,26 +742,34 @@ const ownerOnly = (req, res, next) => (isOwner(req.user) ? next() : res.status(4
 const REPORT_EMAIL = process.env.REPORT_EMAIL || 'artem.yegorov@icloud.com';
 const REPORT_KINDS = { bug: 'Something is broken', abuse: 'Report a person', idea: 'Idea or request', other: 'Something else' };
 let mailer = null;
-if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+// Read the mail settings (trimmed, so a stray space or newline from copy and paste doesn't break them).
+const envTrim = (k) => String(process.env[k] || '').trim();
+const smtpUser = envTrim('SMTP_USER'), smtpPass = envTrim('SMTP_PASS');
+const smtpHost = envTrim('SMTP_HOST') || (smtpUser && smtpPass ? 'smtp.mail.me.com' : '');
+const smtpMissing = [['SMTP_USER', smtpUser], ['SMTP_PASS', smtpPass]].filter(([, v]) => !v).map(([k]) => k);
+const mailHint = smtpMissing.length
+  ? 'Email is not set up on this server: ' + smtpMissing.join(' and ') + ' ' + (smtpMissing.length > 1 ? 'are' : 'is') + ' missing or empty. Reports are still saved here.'
+  : 'Email is not set up on this server.';
+if (!smtpMissing.length) {
   try {
     mailer = require('nodemailer').createTransport({
-      host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT) || 587, secure: Number(process.env.SMTP_PORT) === 465,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      host: smtpHost, port: Number(envTrim('SMTP_PORT')) || 587, secure: Number(envTrim('SMTP_PORT')) === 465,
+      auth: { user: smtpUser, pass: smtpPass },
     });
   } catch (e) { console.warn('Email is not set up:', e.message); }
 }
-const mailHint = 'Email is not set up on this server (SMTP_USER / SMTP_PASS are missing). Reports are still saved here.';
 if (mailer) {
   mailer.verify().then(() => console.log('Email reports: ON, sending to ' + REPORT_EMAIL)).catch((e) => console.warn('Email reports: login FAILED (' + e.message + '). Check SMTP_USER and use an app-specific password for SMTP_PASS.'));
 } else {
-  console.log('Email reports: OFF (set SMTP_USER and SMTP_PASS to turn on). Reports are still saved in the Owner Panel.');
+  const seen = Object.keys(process.env).filter((k) => /smtp|mail|report/i.test(k)).sort();
+  console.log('Email reports: OFF. ' + mailHint + ' Mail-related variables this server can see (names only): ' + (seen.length ? seen.join(', ') : 'none') + '.');
 }
 async function emailReport(r) {
   r.mailError = null;
   if (!mailer) { r.mailError = mailHint; return false; }
   try {
     await mailer.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER, to: REPORT_EMAIL,
+      from: envTrim('SMTP_FROM') || smtpUser, to: REPORT_EMAIL,
       subject: `[${db.serverName}] ${REPORT_KINDS[r.kind]} from ${r.username}`,
       text: `${r.username} reported (${REPORT_KINDS[r.kind]}):\n\n${r.message}\n\nSent ${new Date(r.ts).toISOString()}`,
     });
