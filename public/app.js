@@ -1356,7 +1356,7 @@ function signinToast(name) {
 
 /* ------------------------------------------------- coins, wheel, tag machine */
 
-const RARITY_COLOR = { common: '#aab0b8', uncommon: '#4ade80', rare: '#38bdf8', epic: '#c084fc', legendary: '#fbbf24' };
+const RARITY_COLOR = { common: '#c4b5d9', uncommon: '#ff9f1c', rare: '#84e04f', epic: '#c05cff', legendary: '#ff4d3d' }; // Halloween: ghost, pumpkin, slime, potion, blood
 const tagDef = (id) => ((state.eco && state.eco.tags) || []).find((t) => t.id === id);
 
 // Small pill with a profile tag the person chose to show.
@@ -1367,7 +1367,7 @@ function userTag(u) {
   return h('span', {
     class: 'utag r-' + t.rarity, title: t.rarity + ' tag',
     style: `color:${c};border-color:color-mix(in srgb, ${c} 60%, transparent);background:color-mix(in srgb, ${c} 14%, transparent)`,
-  }, t.name);
+  }, (t.icon ? t.icon + ' ' : '') + t.name);
 }
 
 function takeEco(r) {
@@ -1398,13 +1398,13 @@ function openRewards(tab) {
   const tabs = h('div', { class: 'rw-tabs' });
   const draw = (which) => {
     tab = which;
-    tabs.replaceChildren(...[['wheel', '🎡 Daily Wheel'], ['machine', '🎰 Tag Machine'], ['tags', '🏷 My Tags']].map(([id, label]) =>
+    tabs.replaceChildren(...[['wheel', '🕸️ Spooky Wheel'], ['machine', '🔮 Cauldron'], ['tags', '🎃 My Tags']].map(([id, label]) =>
       h('button', { type: 'button', class: 'rw-tab' + (id === which ? ' on' : ''), onclick: () => draw(id) }, label)));
     body.replaceChildren(which === 'wheel' ? wheelPane() : which === 'machine' ? machinePane(draw) : tagsPane(draw));
   };
   const box = h('div', { class: 'modal rewards' },
     h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
-    h('div', { class: 'rw-head' }, h('h2', {}, 'Rewards'), h('div', { class: 'rw-coins', id: 'rwCoins' }, '🪙 ' + state.eco.coins)),
+    h('div', { class: 'rw-head' }, h('h2', {}, '🎃 Spooky Rewards'), h('div', { class: 'rw-coins', id: 'rwCoins' }, '🪙 ' + state.eco.coins)),
     tabs, body,
     h('p', { class: 'rw-fine' }, 'Coins are just for fun — they have no real-world value and can’t be bought.'));
   draw(tab);
@@ -1414,7 +1414,7 @@ const syncRw = () => { const el = document.getElementById('rwCoins'); if (el) el
 
 function wheelPane() {
   const vals = state.eco.wheel, n = vals.length, seg = 360 / n;
-  const colors = ['#ff8a3d', '#ffb347', '#ff6b35', '#ffd08a', '#ff9a52', '#e8590c', '#ffc078', '#f76707', '#fcc419', '#e03131'];
+  const colors = ['#ff7a00', '#4b1d6b', '#ff9f1c', '#2a1636', '#ff6a00', '#6a2c91', '#ffb347', '#3a1d4f', '#8fe23a', '#d7261e'];
   const grad = vals.map((_, i) => `${colors[i % colors.length]} ${i * seg}deg ${(i + 1) * seg}deg`).join(',');
   const disc = h('div', { class: 'wheel', style: `background:conic-gradient(${grad})` },
     vals.map((v, i) => h('span', { class: 'wlabel', style: `transform:rotate(${(i + 0.5) * seg}deg) translateY(-92px)` }, String(v))));
@@ -1446,33 +1446,33 @@ function wheelPane() {
   paint();
   if (spinWait() > 0) timer = setInterval(() => { if (!document.body.contains(btn)) { clearInterval(timer); timer = null; } else paint(); }, 1000);
   return h('div', { class: 'wheel-pane' },
-    h('p', { class: 'rw-sub' }, 'Spin once every 24 hours for free coins.'),
+    h('p', { class: 'rw-sub' }, 'One free spin every 24 hours. Beware the bats.'),
     h('div', { class: 'wheel-wrap' }, h('div', { class: 'wheel-pointer' }), disc, h('div', { class: 'wheel-hub' })),
     result, btn);
 }
 
 function machinePane(redraw) {
   const cost = state.eco.cost;
-  const reel = h('div', { class: 'reel' }, h('span', { class: 'reel-text' }, '🎰'));
+  const reel = h('div', { class: 'reel' }, h('span', { class: 'reel-text' }, '🔮'));
   const msg = h('div', { class: 'machine-msg' }, `Each roll costs ${cost} coins`);
-  const btn = h('button', { type: 'button', class: 'btn primary roll-btn' }, `ROLL — ${cost} 🪙`);
+  const btn = h('button', { type: 'button', class: 'btn primary roll-btn' }, `BREW — ${cost} 🪙`);
   const check = () => { btn.disabled = state.eco.coins < cost; if (btn.disabled) msg.textContent = `You need ${cost} coins — spin the wheel to earn more`; };
   let busy = false;
   btn.onclick = async () => {
     if (busy) return; busy = true; btn.disabled = true;
     reel.className = 'reel spinning'; msg.textContent = 'Rolling…';
-    const names = state.eco.tags.map((t) => t.name);
+    const names = state.eco.tags.map((t) => (t.icon || '') + ' ' + t.name);
     const text = reel.firstChild;
     const flick = setInterval(() => { text.textContent = names[Math.floor(Math.random() * names.length)]; }, 70);
     let r, err;
     try { r = await api('/machine/roll', 'POST'); } catch (e) { err = e; }
     await new Promise((ok) => setTimeout(ok, 1800));
     clearInterval(flick); busy = false;
-    if (err) { reel.className = 'reel'; text.textContent = '🎰'; toast(err.message); check(); return; }
+    if (err) { reel.className = 'reel'; text.textContent = '🔮'; toast(err.message); check(); return; }
     takeEco(r); syncRw();
     const c = RARITY_COLOR[r.tag.rarity];
     reel.className = 'reel won r-' + r.tag.rarity; reel.style.setProperty('--rc', c);
-    text.textContent = r.tag.name;
+    text.textContent = (r.tag.icon || '') + ' ' + r.tag.name;
     msg.replaceChildren(r.duplicate
       ? h('span', {}, `Duplicate ${r.tag.rarity} tag — ${r.refund} coins back`)
       : h('span', {}, h('b', { style: `color:${c}` }, 'NEW! '), `${r.tag.rarity} tag unlocked — equip it in My Tags`));
@@ -1484,7 +1484,7 @@ function machinePane(redraw) {
     return h('tr', {}, h('td', { style: `color:${RARITY_COLOR[r.id]}` }, r.label), h('td', {}, r.chance + '%'), h('td', { class: 'dim' }, n + ' tags'));
   })));
   return h('div', { class: 'machine-pane' },
-    h('p', { class: 'rw-sub' }, 'Roll for a profile tag. Rarer tags are harder to get.'),
+    h('p', { class: 'rw-sub' }, 'Drop 100 coins in the cauldron for a spooky profile tag. The rarer the tag, the thinner the odds.'),
     reel, msg, btn,
     h('h4', { class: 'odds-h' }, 'Chances'), odds);
 }
@@ -1497,7 +1497,7 @@ function tagsPane(redraw) {
       type: 'button', class: 'tagcard' + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
       title: has ? (on ? 'Click to remove' : 'Click to wear') : 'Not unlocked yet',
       onclick: () => { if (!has) return; attempt(async () => { takeEco(await api('/tags/equip', 'POST', { tag: on ? null : t.id })); redraw('tags'); }); },
-    }, h('span', { class: 'tc-name' }, has ? t.name : '???'), h('span', { class: 'tc-r' }, t.rarity), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
+    }, h('span', { class: 'tc-name' }, has ? (t.icon || '') + ' ' + t.name : '👁 ???'), h('span', { class: 'tc-r' }, t.rarity), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
   };
   const order = state.eco.rarities.map((r) => r.id);
   const sorted = eco.tags.slice().sort((a, b) => order.indexOf(b.rarity) - order.indexOf(a.rarity));
@@ -1566,6 +1566,16 @@ async function openOwnerPanel() {
   open.addEventListener('change', () => attempt(async () => { await api('/owner/settings', 'PUT', { registrationOpen: open.checked }); toast2(open.checked ? 'Sign-ups are open' : 'Sign-ups are closed'); }));
   const welcome = h('input', { type: 'text', value: data.welcomeText, maxlength: 120 });
 
+  const coinSel = h('select', {}, h('option', { value: '' }, 'Choose a member…'), state.users.map((u) => h('option', { value: u.id }, u.username + (u.id === state.me ? ' (you)' : ''))));
+  const coinAmt = h('input', { type: 'number', placeholder: 'Coins (e.g. 500)', step: 1, inputmode: 'numeric' });
+  const st = data.storage || { persistent: true };
+  const restoreFile = h('input', { type: 'file', accept: '.json,application/json', class: 'hidden' });
+  restoreFile.addEventListener('change', async () => {
+    const f = restoreFile.files[0]; restoreFile.value = '';
+    if (!f) return;
+    let obj; try { obj = JSON.parse(await f.text()); } catch { return toast('That file is not a Warms backup'); }
+    if (await confirmBox('Restore this backup?', 'This REPLACES everything on the site (accounts, chats, coins) with the backup, and signs everyone else out.', 'Restore')) attempt(async () => { const r = await api('/owner/restore', 'POST', obj); closeOverlay(); await refresh(); await loadMessages(); toast2('Restored ' + r.users + ' accounts'); });
+  });
   const xferSel = h('select', {}, h('option', { value: '' }, 'Choose new Owner…'), others.map((u) => h('option', { value: u.id }, u.username)));
   const xferPass = h('input', { type: 'password', placeholder: 'Your password', autocomplete: 'current-password' });
   const wipeIn = h('input', { type: 'text', placeholder: 'Type the server name to confirm' });
@@ -1595,6 +1605,26 @@ async function openOwnerPanel() {
           h('button', { class: 'btn small', onclick: () => attempt(async () => { await api(`/owner/reports/${r.id}/resolve`, 'POST'); reopen(); }) }, r.resolved ? 'Reopen' : 'Mark done'),
           h('button', { class: 'btn small ghost', onclick: () => attempt(async () => { await api(`/owner/reports/${r.id}`, 'DELETE'); reopen(); }) }, 'Delete'))))
         : h('div', { class: 'note' }, 'No reports yet.')),
+    h('section', {}, h('h4', {}, '🪙 Give coins'),
+      h('div', { class: 'own-add' }, coinSel, coinAmt),
+      h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => {
+        if (!coinSel.value) return toast('Choose a member first');
+        if (!coinAmt.value) return toast('Enter how many coins');
+        attempt(async () => { const r = await api('/owner/give-coins', 'POST', { userId: coinSel.value, amount: Number(coinAmt.value) }); coinAmt.value = ''; toast2(r.username + ' now has ' + r.coins + ' coins'); });
+      } }, 'Give coins'),
+      h('div', { class: 'note' }, 'Use a minus number (like -100) to take coins away.')),
+    h('section', {}, h('h4', {}, '💾 Save & restore'),
+      h('div', { class: 'note ' + (st.persistent ? 'store-ok' : 'store-bad') }, st.persistent
+        ? '✔ Your data is on a permanent disk. Updates will not erase it.'
+        : '⚠ Temporary storage! Every update to the site ERASES accounts, chats and coins. Add a Render disk (see the guide) or download a backup before each update and restore it after.'),
+      h('div', { class: 'own-add' },
+        h('button', { class: 'btn small', onclick: () => attempt(async () => {
+          const data = await api('/owner/backup');
+          const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' })), download: 'warms-backup-' + new Date().toISOString().slice(0, 10) + '.json' });
+          document.body.append(a); a.click(); a.remove(); toast2('Backup downloaded');
+        }) }, 'Download backup'),
+        h('button', { class: 'btn small', onclick: () => restoreFile.click() }, 'Restore from backup'), restoreFile),
+      h('div', { class: 'note' }, 'Backups hold accounts, roles, chats, coins and tags. Uploaded pictures are not included.')),
     h('section', {}, h('h4', {}, 'Sign-ups & welcome'),
       h('label', { class: 'own-check' }, open, ' Allow new people to register'),
       h('div', { class: 'own-add' }, welcome,

@@ -992,3 +992,23 @@ body {
 .tc-name { font-weight: 800; font-size: 13px; }
 .tc-r { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; opacity: .75; }
 .tc-on { font-size: 10px; font-weight: 700; }
+
+/* ---------------------------------------------------------- halloween */
+.modal.rewards { background: radial-gradient(120% 80% at 50% 0%, #3b1352 0%, #1a0b24 55%, #10061a 100%); border: 1px solid #ff7a0055; box-shadow: 0 0 40px #ff7a0033, 0 20px 60px #000a; }
+.modal.rewards::before { content: '🕸️'; position: absolute; top: 4px; left: 8px; font-size: 26px; opacity: .55; pointer-events: none; }
+.rw-head h2 { padding-left: 24px; color: #ff9f1c; text-shadow: 0 0 14px #ff7a0066; }
+.rw-tab.on { background: #ff7a0033; border-color: #ff9f1c; }
+.wheel { border-color: #ff9f1caa; box-shadow: 0 0 34px #ff7a0066, inset 0 0 22px #000a; }
+.wlabel { color: #fff; text-shadow: 0 1px 3px #000; }
+.wheel-hub { background: #12061c; border-color: #ff9f1c; }
+.wheel-hub::after { content: '🎃'; }
+.wheel-pointer { border-top-color: #ff9f1c; }
+.wheel-result { color: #ff9f1c; text-shadow: 0 0 12px #ff7a00; }
+.reel { background: #0a0410cc; border-color: #6a2c91; }
+.reel.spinning { border-color: #8fe23a; box-shadow: 0 0 24px #8fe23a55; }
+.tagcard.on { box-shadow: 0 0 14px color-mix(in srgb, var(--rc) 50%, transparent); }
+.coin-chip { border-color: #ff9f1c88; background: #ff7a0022; color: #ffb347; }
+.utag.r-legendary { box-shadow: 0 0 10px #ff4d3d88; }
+.utag.r-epic { box-shadow: 0 0 8px #c05cff77; }
+.note.store-ok { color: #6ee7a0; }
+.note.store-bad { color: #ffb347; font-weight: 600; }

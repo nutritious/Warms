@@ -45,6 +45,8 @@ try {
   db = freshDb();
 }
 
+const ANN = 'announcements';
+function migrate() {
 db.settings = Object.assign({ registrationOpen: true, welcomeText: 'Welcome {name}! \uD83D\uDC4B' }, db.settings || {});
 // Older data had Admin at the top. Add the Owner role above it and make the founding Admin the Owner.
 if (!db.roles.some((r) => r.id === 'owner')) {
@@ -62,7 +64,6 @@ if (!Array.isArray(db.spaces) || !db.spaces.length) db.spaces = [{ id: 'main', n
 for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
 // One global #announcements chat, shown as its own icon on the far-left bar. Only the Owner can post in it.
 // (An earlier version put one in every space: keep the first one's history and drop the rest.)
-const ANN = 'announcements';
 {
   let ann = db.channels.find((c) => c.global);
   if (!ann) ann = db.channels.find((c) => c.locked) || db.channels.find((c) => c.name === 'announcements' && c.spaceId === db.spaces[0].id);
@@ -72,9 +73,11 @@ const ANN = 'announcements';
   db.channels = db.channels.filter((x) => !x.locked || x === ann);
   db.messages[ann.id] = db.messages[ann.id] || [];
 }
+  syncServerName();
+}
 const spaceById = (id) => db.spaces.find((x) => x.id === id);
 const syncServerName = () => { db.serverName = db.spaces[0].name; };
-syncServerName();
+migrate();
 function audit(user, text) {
   db.audit.push({ ts: Date.now(), by: user.username, text });
   if (db.audit.length > 500) db.audit.splice(0, db.audit.length - 500);
@@ -140,7 +143,7 @@ const hasAnyPerm = (u) => PERMS.some((p) => can(u, p));
 const muteLeft = (u) => (u.mutedUntil && u.mutedUntil > Date.now() ? Math.ceil((u.mutedUntil - Date.now()) / 60000) : 0);
 
 function publicUser(u) {
-  return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0, tag: u.tag && (u.tags || []).includes(u.tag) ? u.tag : null };
+  return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0, tag: u.tag && (u.tags || []).some((t) => (OLD_TAG_IDS[t] || t) === (OLD_TAG_IDS[u.tag] || u.tag)) ? (OLD_TAG_IDS[u.tag] || u.tag) : null };
 }
 
 function auth(req, res, next) {
@@ -389,15 +392,17 @@ const RARITIES = [ // chance of each rarity per roll, and coins back for a dupli
   { id: 'epic', label: 'Epic', chance: 4, refund: 120 },
   { id: 'legendary', label: 'Legendary', chance: 1, refund: 250 },
 ];
-const TAGS = [
-  { id: 'newbie', name: 'Newbie', rarity: 'common' }, { id: 'chill', name: 'Chill', rarity: 'common' },
-  { id: 'lurker', name: 'Lurker', rarity: 'common' }, { id: 'snacky', name: 'Snacky', rarity: 'common' },
-  { id: 'night-owl', name: 'Night Owl', rarity: 'uncommon' }, { id: 'gamer', name: 'Gamer', rarity: 'uncommon' },
-  { id: 'meme-lord', name: 'Meme Lord', rarity: 'uncommon' }, { id: 'vibes', name: 'Good Vibes', rarity: 'rare' },
-  { id: 'big-brain', name: 'Big Brain', rarity: 'rare' }, { id: 'speedrunner', name: 'Speedrunner', rarity: 'rare' },
-  { id: 'cozy-fire', name: 'Cozy Fire', rarity: 'epic' }, { id: 'sunburst', name: 'Sunburst', rarity: 'epic' },
-  { id: 'warm-legend', name: 'Warm Legend', rarity: 'legendary' }, { id: 'golden-goat', name: 'Golden Goat', rarity: 'legendary' },
+const TAGS = [ // Halloween set (icon shows beside the name)
+  { id: 'ghost', name: 'Little Ghost', icon: '👻', rarity: 'common' }, { id: 'candy-corn', name: 'Candy Corn', icon: '🍬', rarity: 'common' },
+  { id: 'cobweb', name: 'Cobweb', icon: '🕸️', rarity: 'common' }, { id: 'pumpkin-spice', name: 'Pumpkin Spice', icon: '🥧', rarity: 'common' },
+  { id: 'black-cat', name: 'Black Cat', icon: '🐈‍⬛', rarity: 'uncommon' }, { id: 'bat-wing', name: 'Bat Wing', icon: '🦇', rarity: 'uncommon' },
+  { id: 'trick-or-treat', name: 'Trick or Treat', icon: '🍭', rarity: 'uncommon' }, { id: 'witch-brew', name: "Witch's Brew", icon: '🧪', rarity: 'rare' },
+  { id: 'haunted', name: 'Haunted', icon: '🏚️', rarity: 'rare' }, { id: 'skeleton-crew', name: 'Skeleton Crew', icon: '💀', rarity: 'rare' },
+  { id: 'jack-o-lantern', name: "Jack-o'-Lantern", icon: '🎃', rarity: 'epic' }, { id: 'vampire-kiss', name: "Vampire's Kiss", icon: '🧛', rarity: 'epic' },
+  { id: 'headless-horseman', name: 'Headless Horseman', icon: '🐴', rarity: 'legendary' }, { id: 'midnight-reaper', name: 'Midnight Reaper', icon: '☠️', rarity: 'legendary' },
 ];
+// Old tag ids from the first version are renamed so nobody loses what they already own.
+const OLD_TAG_IDS = { newbie: 'ghost', chill: 'candy-corn', lurker: 'cobweb', snacky: 'pumpkin-spice', 'night-owl': 'black-cat', gamer: 'bat-wing', 'meme-lord': 'trick-or-treat', vibes: 'witch-brew', 'big-brain': 'haunted', speedrunner: 'skeleton-crew', 'cozy-fire': 'jack-o-lantern', sunburst: 'vampire-kiss', 'warm-legend': 'headless-horseman', 'golden-goat': 'midnight-reaper' };
 const tagById = (id) => TAGS.find((t) => t.id === id);
 const rarityOf = (id) => RARITIES.find((r) => r.id === id);
 function pickWeighted(list, weight) {
@@ -407,6 +412,8 @@ function pickWeighted(list, weight) {
   return list[list.length - 1];
 }
 function econ(u) {
+  if (Array.isArray(u.tags) && u.tags.some((t) => OLD_TAG_IDS[t])) u.tags = [...new Set(u.tags.map((t) => OLD_TAG_IDS[t] || t))];
+  if (OLD_TAG_IDS[u.tag]) u.tag = OLD_TAG_IDS[u.tag];
   if (typeof u.coins !== 'number') u.coins = 0;
   if (!Array.isArray(u.tags)) u.tags = [];
   return u;
@@ -908,6 +915,7 @@ app.get('/api/owner/overview', auth, ownerOnly, (req, res) => {
     members: users.length,
     sessions: Object.keys(db.sessions).length,
     audit: db.audit.slice(-40).reverse(),
+    storage: storageInfo(),
   });
 });
 
@@ -923,6 +931,47 @@ app.put('/api/owner/settings', auth, ownerOnly, (req, res) => {
   }
   save();
   res.json({ ok: true, settings: db.settings });
+});
+
+app.post('/api/owner/give-coins', auth, ownerOnly, (req, res) => {
+  const target = db.users[String(req.body.userId || '')];
+  const amount = Math.trunc(Number(req.body.amount));
+  if (!target) return res.status(404).json({ error: 'Pick a member first' });
+  if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 1e6) return res.status(400).json({ error: 'Enter an amount between 1 and 1,000,000 (use a minus to take coins away)' });
+  econ(target);
+  target.coins = Math.max(0, Math.min(1e9, target.coins + amount));
+  audit(req.user, `${amount > 0 ? 'gave' : 'took'} ${Math.abs(amount)} coins ${amount > 0 ? 'to' : 'from'} ${target.username}`);
+  save();
+  broadcast({ t: 'members' });
+  res.json({ ok: true, coins: target.coins, username: target.username });
+});
+
+// Is the data folder on a real disk that survives updates? (A mounted disk lives on a different device than the app's own files.)
+function storageInfo() {
+  let persistent = true; // on your own computer ./data stays put
+  if (process.env.RENDER) {
+    try { persistent = fs.statSync(DATA_DIR).dev !== fs.statSync(__dirname).dev; } catch { persistent = false; }
+  }
+  return { persistent, dir: DATA_DIR, onRender: !!process.env.RENDER };
+}
+
+app.get('/api/owner/backup', auth, ownerOnly, (req, res) => {
+  res.setHeader('Content-Disposition', `attachment; filename="warms-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.json({ warmsBackup: 1, savedAt: Date.now(), db: { ...db, sessions: {} } });
+});
+
+app.post('/api/owner/restore', auth, ownerOnly, (req, res) => {
+  const b = req.body && req.body.warmsBackup === 1 ? req.body.db : null;
+  if (!b || typeof b.users !== 'object' || !Array.isArray(b.channels) || typeof b.messages !== 'object' || !Array.isArray(b.roles)) return res.status(400).json({ error: 'That is not a Warms backup file' });
+  if (!Object.values(b.users).some((u) => u.roleId === 'owner')) return res.status(400).json({ error: 'The backup has no Owner account, so restoring it would lock you out' });
+  const keep = { ...b, sessions: {}, reports: b.reports || [] };
+  const mine = Object.values(keep.users).find((u) => u.username.toLowerCase() === req.user.username.toLowerCase());
+  db = Object.assign(freshDb(), keep);
+  if (mine) db.sessions[req.token] = mine.id; // keep you signed in if your account is in the backup
+  migrate();
+  save();
+  for (const ws of sockets.keys()) ws.close();
+  res.json({ ok: true, users: Object.keys(db.users).length });
 });
 
 app.post('/api/owner/transfer', auth, ownerOnly, async (req, res) => {
@@ -1154,4 +1203,8 @@ app.post('/api/admin/command', auth, (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`Chat running on http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Chat running on http://localhost:${PORT}`);
+  const st = storageInfo();
+  console.log(st.persistent ? `Storage: permanent (${st.dir})` : `Storage: TEMPORARY (${st.dir}) - everything is erased on every update! Add a disk on Render, or use Back up / Restore in the Owner Panel.`);
+});

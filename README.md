@@ -91,6 +91,12 @@ Video and screen sharing, direct messages, and password reset (an Owner or Admin
 
 ## Coins, Daily Wheel and Tag Machine
 
-Everyone gets a free spin of the Daily Wheel every 24 hours (click the 🪙 coin chip by your name). Coins are play money only. Spend 100 coins on the Tag Machine for a random profile tag, then wear one from "My Tags" and it shows next to your name.
+Everyone gets a free spin of the Daily Wheel every 24 hours (click the 🪙 coin chip by your name). Coins are play money only. Spend 100 coins in the Halloween cauldron (Tag Machine) for a random profile tag, then wear one from "My Tags" and it shows next to your name.
 
 Tag odds per roll: Common 60%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%. A duplicate gives some coins back. Owner and Admins can use the console command `givecoins <user> <amount>`. Odds and tags live at the top of the "coins, wheel, tags" section in `server.js`.
+
+The Owner Panel has a **Give coins** box (pick a member, type an amount; a minus number takes coins away). The console command `givecoins <user> <amount>` still works too.
+
+## Keeping your data when you update
+
+Accounts, chats and coins live in `db.json` inside the data folder. On Render that folder must be on a **disk** (render.yaml asks for one, and disks need a paid plan). Without a disk, every update wipes the site. The Owner Panel shows "permanent disk" or a warning, and the startup log prints `Storage: permanent` or `Storage: TEMPORARY`. As an extra safety net use **Owner Panel -> Save & restore -> Download backup** before updating and **Restore from backup** afterwards. Uploaded pictures are not in the backup.
