@@ -984,7 +984,7 @@ async function renderRolesTab(el) {
 
   const edit = h('div', { class: 'role-edit' },
     h('h2', {}, sel.name),
-    sel.id === 'owner' ? h('div', { class: 'note' }, 'The Owner always has every permission. The first person to register is the Owner.') : null,
+    sel.id === 'owner' ? h('div', { class: 'note' }, 'The Owner always has every permission. Registering with the username "Warmaster" makes you the Owner.') : null,
     sel.id === 'admin' ? h('div', { class: 'note' }, 'Admins have every permission except Owner powers. Only the Owner can make someone an Admin.') : null,
     !canEdit && sel.id !== 'owner' && sel.id !== 'admin' ? h('div', { class: 'note' }, 'You can only edit roles ranked below your own.') : null,
     h('div', { class: 'field' }, h('label', {}, 'ROLE NAME'), nameIn),

