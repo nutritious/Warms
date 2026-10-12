@@ -272,6 +272,7 @@ async function start() {
   state.channelId = null;
   await refresh();
   loadFriends();
+  loadUpdates();
   playIntro();
   connectWs();
   $('msgInput').focus();
@@ -328,6 +329,8 @@ function connectWs() {
       attempt(async () => { await refresh(); });
     } else if (m.t === 'purged') {
       if (m.channelId === state.channelId) attempt(loadMessages);
+    } else if (m.t === 'updates') {
+      attempt(loadUpdates);
     } else if (m.t === 'dm') {
       pushDm(m.msg);
     } else if (m.t === 'friends') {
@@ -1594,6 +1597,74 @@ function tagsPane(redraw) {
       return h('section', { class: 'tg-pack' }, h('h4', {}, `${p.icon} ${p.name}`, h('small', {}, ` ${mine.filter((t) => owned.has(t.id)).length}/${mine.length}`)),
         h('div', { class: 'tagrid' }, sorted.map(mk)));
     }));
+}
+
+/* ------------------------------------------------------ update log */
+
+state.updates = [];
+const logSeen = () => { try { return Number(localStorage.getItem('logSeen')) || 0; } catch { return 0; } };
+const markLogSeen = () => { try { localStorage.setItem('logSeen', String(state.updates.reduce((m, x) => Math.max(m, x.seq), 0))); } catch {} renderLogDot(); };
+function renderLogDot() {
+  const latest = state.updates.reduce((m, x) => Math.max(m, x.seq), 0);
+  $('railLogDot').classList.toggle('hidden', !(latest > logSeen()));
+}
+async function loadUpdates() {
+  try { state.updates = await api('/updates'); } catch { return; }
+  renderLogDot();
+  if (document.getElementById('ulogList')) drawLog();
+}
+$('railLog').onclick = openUpdateLog;
+
+function openUpdateLog() {
+  const box = h('div', { class: 'modal ulog' },
+    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('h2', {}, '📜 Update log'),
+    h('p', { class: 'rw-sub' }, isOwner() ? 'Everything that changed, newest first. You can add, edit and delete entries.' : 'Everything that changed, newest first.'),
+    isOwner() ? h('div', { class: 'ul-new' }, h('button', { type: 'button', class: 'btn primary small', onclick: () => editEntry(null) }, '＋ New entry')) : null,
+    h('div', { id: 'ulogList', class: 'ul-list' }));
+  openOverlay(box);
+  drawLog();
+  markLogSeen();
+  loadUpdates();
+}
+
+function drawLog() {
+  const list = document.getElementById('ulogList');
+  if (!list) return;
+  const latest = state.updates.reduce((m, x) => Math.max(m, x.seq), 0);
+  list.replaceChildren(...(state.updates.length ? state.updates.map((e) => entryCard(e, e.seq === latest)) : [h('div', { class: 'note' }, 'Nothing here yet.')]));
+}
+
+function entryCard(e, newest) {
+  return h('article', { class: 'ul-entry' + (newest ? ' newest' : ''), 'data-id': e.id },
+    h('div', { class: 'ul-head' },
+      h('span', { class: 'ul-badge' }, e.id.startsWith('v') ? e.id : 'update'),
+      h('b', { class: 'ul-title' }, e.title),
+      newest ? h('span', { class: 'ul-latest' }, 'LATEST') : null,
+      h('span', { class: 'ul-date' }, e.date)),
+    h('ul', {}, e.notes.map((n) => h('li', {}, n))),
+    isOwner() ? h('div', { class: 'ul-actions' },
+      h('button', { type: 'button', class: 'mini', onclick: () => editEntry(e) }, '✎ Edit'),
+      h('button', { type: 'button', class: 'mini danger', onclick: async () => {
+        if (await confirmBox('Delete this entry?', e.title, 'Delete')) attempt(async () => { state.updates = await api('/owner/updates/' + e.id, 'DELETE'); openUpdateLog(); });
+      } }, 'Delete')) : null);
+}
+
+// Owner only: add (e = null) or edit an entry. The server refuses everyone else.
+function editEntry(e) {
+  const title = h('input', { type: 'text', maxlength: 80, value: e ? e.title : '', placeholder: 'Title, e.g. Pet tags are here' });
+  const date = h('input', { type: 'text', maxlength: 10, value: e ? e.date : new Date().toISOString().slice(0, 10), placeholder: 'YYYY-MM-DD' });
+  const notes = h('textarea', { rows: 7, maxlength: 3000, placeholder: 'One change per line' }, e ? e.notes.join('\n') : '');
+  const form = h('form', { class: 'modal ulog-edit', onsubmit: (ev) => {
+    ev.preventDefault();
+    if (!title.value.trim()) return toast('Give the entry a title');
+    const body = { title: title.value, date: date.value, notes: notes.value.split('\n') };
+    attempt(async () => { state.updates = e ? await api('/owner/updates/' + e.id, 'PUT', body) : await api('/owner/updates', 'POST', body); toast2('Saved'); openUpdateLog(); });
+  } },
+    h('h2', {}, e ? 'Edit entry' : 'New entry'), title, date, notes,
+    h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn ghost small', onclick: openUpdateLog }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary small' }, 'Save')));
+  openOverlay(form);
+  title.focus();
 }
 
 /* ------------------------------------------------------ friends and direct messages */

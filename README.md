@@ -118,3 +118,7 @@ A filter bot blocks cuss words and spam (flooding, repeating the same message, l
 ## Giving tags (Owner and Admins)
 
 Open the **Command Center** (the ⚡ button) and use the **Give tags & coins** panel, or open anyone's profile card (click their name or picture) and use **Tags (staff)**: pick one tag, or a whole pack, then **Give** or **Take back**. The console command `givetag <user> <tag name>` does the same for one tag.
+
+## Update Log
+
+The 📜 button on the far-left bar opens the Update Log: everyone can read it, only the Owner can add, edit or delete entries. Entries that ship with the code live in `changelog.js`. **Every update adds a new entry at the bottom of that file** (see CLAUDE.md); it shows up in the app after the update is deployed. The Owner can also type entries directly in the app.

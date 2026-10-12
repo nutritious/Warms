@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const automod = require('./automod');
+const CHANGELOG = require('./changelog');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -52,6 +53,12 @@ db.settings = Object.assign({ registrationOpen: true, welcomeText: 'Welcome {nam
 db.settings.automod = Object.assign({ enabled: true, includeStaff: false, words: [] }, db.settings.automod || {});
 db.events = Array.isArray(db.events) ? db.events : [];
 db.dms = db.dms && typeof db.dms === 'object' ? db.dms : {};
+// Update Log: entries shipped with the code are copied in once. The Owner can then edit or delete them.
+db.updates = Array.isArray(db.updates) ? db.updates : [];
+db.updatesGone = Array.isArray(db.updatesGone) ? db.updatesGone : [];
+CHANGELOG.forEach((e, i) => {
+  if (!db.updates.some((x) => x.id === e.id) && !db.updatesGone.includes(e.id)) db.updates.push({ id: e.id, seq: i + 1, date: e.date, title: e.title, notes: e.notes.slice() });
+});
 // Older data had Admin at the top. Add the Owner role above it and make the founding Admin the Owner.
 if (!db.roles.some((r) => r.id === 'owner')) {
   for (const r of db.roles) if (r.position < 100) r.position += 1;
@@ -694,6 +701,47 @@ app.post('/api/users/:id/tags', auth, (req, res) => {
   save();
   broadcast({ t: 'members' });
   res.json({ ok: true, changed: changed.map((t) => t.name), skipped: list.length - changed.length, username: target.username });
+});
+
+/* ------------------------------------------------------------ update log */
+const updatesView = () => db.updates.slice().sort((a, b) => b.seq - a.seq);
+function cleanUpdate(body) {
+  const title = String(body.title || '').trim().slice(0, 80);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) ? String(body.date) : new Date().toISOString().slice(0, 10);
+  const notes = (Array.isArray(body.notes) ? body.notes : String(body.notes || '').split('\n')).map((n) => String(n).trim().slice(0, 240)).filter(Boolean).slice(0, 20);
+  return title ? { title, date, notes } : null;
+}
+app.get('/api/updates', auth, (req, res) => res.json(updatesView()));
+app.post('/api/owner/updates', auth, (q, r, n) => ownerOnly(q, r, n), (req, res) => {
+  const c = cleanUpdate(req.body);
+  if (!c) return res.status(400).json({ error: 'Give the entry a title' });
+  const seq = db.updates.reduce((m, x) => Math.max(m, x.seq), 0) + 1;
+  db.updates.push({ id: 'u' + uid(5), seq, ...c });
+  audit(req.user, 'added an Update Log entry: ' + c.title);
+  save();
+  broadcast({ t: 'updates' });
+  res.json(updatesView());
+});
+app.put('/api/owner/updates/:id', auth, (q, r, n) => ownerOnly(q, r, n), (req, res) => {
+  const e = db.updates.find((x) => x.id === req.params.id);
+  const c = cleanUpdate(req.body);
+  if (!e) return res.status(404).json({ error: 'No such entry' });
+  if (!c) return res.status(400).json({ error: 'Give the entry a title' });
+  Object.assign(e, c);
+  audit(req.user, 'edited an Update Log entry: ' + c.title);
+  save();
+  broadcast({ t: 'updates' });
+  res.json(updatesView());
+});
+app.delete('/api/owner/updates/:id', auth, (q, r, n) => ownerOnly(q, r, n), (req, res) => {
+  const e = db.updates.find((x) => x.id === req.params.id);
+  if (!e) return res.status(404).json({ error: 'No such entry' });
+  db.updates = db.updates.filter((x) => x !== e);
+  if (CHANGELOG.some((x) => x.id === e.id)) db.updatesGone.push(e.id); // keep shipped entries from coming back
+  audit(req.user, 'deleted an Update Log entry: ' + e.title);
+  save();
+  broadcast({ t: 'updates' });
+  res.json(updatesView());
 });
 
 /* -------------------------------------------------------------- messages */
@@ -1520,6 +1568,14 @@ app.post('/api/admin/command', auth, (req, res) => {
       return done(`Unknown command "${cmd}". Type help to see what is available.`, false);
   }
 });
+
+// Render stops the old copy with SIGTERM during an update: write everything to disk first so nothing is lost.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    try { const tmp = DB_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(db)); fs.renameSync(tmp, DB_FILE); } catch {}
+    process.exit(0);
+  });
+}
 
 server.listen(PORT, () => {
   console.log(`Chat running on http://localhost:${PORT}`);
