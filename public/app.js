@@ -114,6 +114,24 @@ function applySkin() {
 }
 applySkin();
 
+/* ---- Halloween lobby: decorations that disappear on November 1st (midnight Pacific) ---- */
+const HALLOWEEN_END = Date.UTC(2026, 10, 1, 7, 0, 0);
+const halloweenOn = () => pref('halloween') !== 'off' && Date.now() < HALLOWEEN_END;
+function applyHalloween() {
+  const on = halloweenOn(), had = document.body.classList.contains('halloween');
+  document.body.classList.toggle('halloween', on);
+  const old = document.getElementById('hwDeco');
+  if (!on) { if (old) old.remove(); return; }
+  if (had && old) return;
+  const deco = h('div', { id: 'hwDeco', 'aria-hidden': 'true' },
+    h('div', { class: 'hw-web tl' }), h('div', { class: 'hw-web tr' }), h('div', { class: 'hw-moon' }),
+    [0, 1, 2, 3, 4, 5].map((i) => h('span', { class: 'hw-bat', style: `top:${6 + i * 11}%;animation-duration:${16 + i * 3}s;animation-delay:${-i * 4.5}s;font-size:${18 + (i % 3) * 8}px` }, '🦇')),
+    [0, 1, 2].map((i) => h('span', { class: 'hw-ghost', style: `left:${14 + i * 30}%;animation-delay:${-i * 2.3}s` }, '👻')));
+  document.body.append(deco);
+}
+applyHalloween();
+setInterval(applyHalloween, 30000);
+
 function toast(text) {
   const t = h('div', { class: 'toast' }, text);
   document.body.append(t);
@@ -200,6 +218,12 @@ function setAuthMode(reg, hasUsers) {
     note.classList.remove('hidden');
   } else note.classList.add('hidden');
   $('authErr').textContent = '';
+  $('authRulesWrap').classList.toggle('hidden', !reg);
+  if (reg) {
+    $('authAgree').checked = false;
+    $('authBtn').disabled = true;
+    loadRules().then((d) => { if (d && !$('authRules').firstChild) $('authRules').append(rulesNode(d)); });
+  } else $('authBtn').disabled = false;
 }
 
 async function showAuth() {
@@ -215,12 +239,13 @@ async function showAuth() {
 $('authForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('authErr').textContent = '';
+  if (registerMode && !$('authAgree').checked) { $('authErr').textContent = 'Please read and agree to the Server Rules first'; return; }
   $('authBtn').disabled = true;
   try {
     const res = await fetch('/api/' + (registerMode ? 'register' : 'login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: $('authUser').value, password: $('authPass').value }),
+      body: JSON.stringify({ username: $('authUser').value, password: $('authPass').value, agreeRules: registerMode ? $('authAgree').checked : undefined }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong');
@@ -231,7 +256,7 @@ $('authForm').addEventListener('submit', async (e) => {
   } catch (err) {
     $('authErr').textContent = err.message;
   } finally {
-    $('authBtn').disabled = false;
+    $('authBtn').disabled = registerMode && !$('authAgree').checked;
   }
 });
 
@@ -258,6 +283,7 @@ async function refresh() {
   state.voice = data.voice || {};
   state.serverName = data.serverName;
   state.annIcon = data.annIcon || null;
+  state.perks = data.perks || { troll: false, community: false };
   if (data.economy) takeEco(data.economy);
   state.spaces = data.spaces || [{ id: 'main', name: data.serverName }];
   if (state.spaceId !== ANN_SPACE && !state.spaces.some((x) => x.id === state.spaceId)) state.spaceId = state.spaces[0].id;
@@ -277,6 +303,7 @@ async function start() {
   await refresh();
   loadFriends();
   loadUpdates();
+  loadMinigame();
   playIntro();
   connectWs();
   $('msgInput').focus();
@@ -315,10 +342,19 @@ function connectWs() {
       if (x) { x.content = m.content; x.edited = m.edited; refreshMessage(m.id); }
     } else if (m.t === 'voice') {
       state.voice = m.voice; renderVoice();
+    } else if (m.t === 'call-ring') {
+      showRing(m);
+    } else if (m.t === 'call-cancel') {
+      hideRing(m.room);
+    } else if (m.t === 'call-declined') {
+      toast2(`📞 ${m.by} declined the call`); if (V.room) cleanupVoice();
+    } else if (m.t === 'call-missed') {
+      toast2(m.offline ? `📞 ${m.to} is offline right now` : `📞 ${m.to} did not pick up`); if (V.room) cleanupVoice();
     } else if (m.t === 'voice-joined') {
       onVoiceJoined(m);
     } else if (m.t === 'voice-left') {
       dropPeer(m.userId);
+      if (V.room && V.room.startsWith('dm:')) { toast2('📞 Call ended'); leaveVoice(); }
     } else if (m.t === 'voice-signal') {
       onVoiceSignal(m.from, m.data);
     } else if (m.t === 'voice-share-denied') {
@@ -326,7 +362,13 @@ function connectWs() {
     } else if (m.t === 'voice-error') {
       cleanupVoice(); toast(m.error);
     } else if (m.t === 'announce') {
-      showBanner(m.by, m.text);
+      if (!m.channelId || m.channelId === state.channelId) showBanner(m.by, m.text); // the pop-up only shows in #general
+    } else if (m.t === 'troll') {
+      runTroll(m);
+    } else if (m.t === 'minigame') {
+      if (m.kind === 'win') { if (m.username !== me().username) toast2(`🏆 ${m.username} won the minigame in ${m.time}s`); }
+      else if (m.kind === 'start') { toast2('🎮 A minigame started! Look for the 🎮 button'); }
+      attempt(loadMinigame);
     } else if (m.t === 'welcome') {
       if (m.userId !== state.me) showBanner(m.username, m.text, 'NEW MEMBER', 'welcome');
       attempt(async () => { await refresh(); });
@@ -396,10 +438,12 @@ function renderChrome() {
     const un = ids.map((id) => state.unread[id]).filter(Boolean);
     const ping = un.some((x) => x.m);
     return h('button', { class: 'rail-chat' + (sp2.id === state.spaceId ? ' active' : '') + (sp2.icon ? ' has-img' : ''), title: sp2.name, onclick: () => { closeDm(); switchSpace(sp2.id); } },
-      sp2.icon ? h('img', { class: 'rail-img', src: sp2.icon, alt: '' }) : h('span', {}, spaceInitials(sp2.name)),
+      sp2.icon ? h('img', { class: 'rail-img', src: sp2.icon, alt: '' }) : h('span', {}, sp2.system ? '🛡️' : spaceInitials(sp2.name)),
       un.length ? h('i', { class: 'rail-dot' + (ping ? ' ping' : '') }) : null);
   }));
   $('ownerBtn').classList.toggle('hidden', !isOwner());
+  $('commBtn').classList.toggle('hidden', !(state.perks && state.perks.community));
+  $('trollBtn').classList.toggle('hidden', !(state.perks && state.perks.troll));
   $('adminBtn').classList.toggle('hidden', !isAdmin());
   $('staffBtn').classList.toggle('hidden', isAdmin() || !hasStaffPerm());
 
@@ -770,19 +814,6 @@ async function switchSpace(id) {
   if (ch) await switchChannel(ch.id);
 }
 
-async function newSpace() {
-  if (!isAdmin()) return toast('Only the Owner and Admins can create spaces');
-  const name = await ask('New space', 'Space name');
-  if (!name) return;
-  attempt(async () => {
-    const r = await api('/spaces', 'POST', { name });
-    await refresh();
-    state.spaceId = r.space.id;
-    await switchChannel(r.channel.id);
-    toast2('Created ' + r.space.name);
-  });
-}
-
 async function newChat() {
   const name = await ask('New chat', 'new-chat-name');
   if (!name) return;
@@ -933,6 +964,10 @@ function renderAppearanceTab(el) {
           h('span', { class: 'sn' }, label))))),
     h('div', { class: 'field' }, h('label', {}, 'ACCENT COLOR'), accent,
       h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn small', onclick: () => { pref('accent', null); applySkin(); openSettings('look'); } }, 'Reset to theme'))),
+    h('div', { class: 'field' }, h('label', {}, 'PRANKS'),
+      h('label', { class: 'own-check' }, h('input', { type: 'checkbox', checked: pranksOn(), onchange: (e) => pref('pranks', e.target.checked ? null : 'off') }), ' Allow scary screen pranks from the Troll Panel (jump scares, spiders, lights out...)')),
+    HALLOWEEN_END > Date.now() ? h('div', { class: 'field' }, h('label', {}, '🎃 HALLOWEEN'),
+      h('label', { class: 'own-check' }, h('input', { type: 'checkbox', checked: pref('halloween') !== 'off', onchange: (e) => { pref('halloween', e.target.checked ? null : 'off'); applyHalloween(); } }), ' Show Halloween decorations (they leave on November 1st)')) : null,
     h('div', { class: 'note' }, 'Your look is saved on this device only. Other people keep their own.'));
 }
 
@@ -967,8 +1002,9 @@ function renderServerTab(el) {
   el.append(h('h2', {}, 'Space'),
     h('div', { class: 'field' }, h('label', {}, 'SPACE NAME'), input),
     isAdmin() ? iconEditor(sp.id, sp.icon, () => openSettings('server')) : null,
+    isOwner() ? accessEditor(sp, () => openSettings('server')) : null,
     h('button', { class: 'btn primary small', onclick: () => attempt(async () => { await api('/server', 'PATCH', { name: input.value, spaceId: sp.id }); toast2('Saved'); }) }, 'Save'),
-    isAdmin() && !isFirst ? h('div', { class: 'field', style: 'margin-top:24px' }, h('label', {}, 'DANGER ZONE'),
+    isAdmin() && !isFirst && !sp.system ? h('div', { class: 'field', style: 'margin-top:24px' }, h('label', {}, 'DANGER ZONE'),
       h('button', { class: 'btn danger small', onclick: async () => {
         if (await confirmBox('Delete ' + sp.name + '?', 'Every chat and message in this space will be deleted for good.', 'Delete space')) {
           attempt(async () => { closeOverlay(); await api('/spaces/' + sp.id, 'DELETE'); await refresh(); toast2('Space deleted'); });
@@ -984,7 +1020,7 @@ async function renderRolesTab(el) {
   if (!selectedRoleId || !state.roles.some((r) => r.id === selectedRoleId)) selectedRoleId = ordered[0].id;
   const sel = roleById(selectedRoleId);
   const editable = (r) => isOwner() || myRole().position < r.position;
-  const movable = ordered.filter((r) => !['owner', 'admin', 'member'].includes(r.id));
+  const movable = ordered.filter((r) => !SYSTEM_ROLES.includes(r.id));
 
   const reload = async () => { await refresh(); renderRolesTab(el); };
 
@@ -1029,7 +1065,7 @@ async function renderRolesTab(el) {
         await api('/roles/' + sel.id, 'PATCH', { name: nameIn.value, color: colorIn.value, perms });
         await reload(); toast2('Saved');
       }) }, 'Save changes'),
-      !['owner', 'admin', 'member'].includes(sel.id)
+      !SYSTEM_ROLES.includes(sel.id)
         ? h('button', { class: 'btn danger small', onclick: async () => {
             if (await confirmBox('Delete role "' + sel.name + '"?', 'Anyone with this role goes back to Member.')) {
               attempt(async () => { await api('/roles/' + sel.id, 'DELETE'); selectedRoleId = null; await refresh(); openSettings('roles'); });
@@ -1456,7 +1492,7 @@ function fmtWait(ms) {
   return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
 }
 const fmtLeft = (ms) => { const s = Math.ceil(ms / 1000), p = (n) => String(n).padStart(2, '0'); return s >= 3600 ? `${Math.floor(s / 3600)}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}` : `${Math.floor(s / 60)}:${p(s % 60)}`; };
-const evDetail = (e) => (e.type === 'luck' ? `rare chances x${e.mult}` : e.type === 'double' ? `wheel pays x${e.mult}` : e.type === 'sale' ? `${e.percent}% off packs` : '');
+const evDetail = (e) => (e.type === 'luck' ? `rare chances x${e.mult}` : e.type === 'double' ? `wheel pays x${e.mult}` : e.type === 'sale' ? `${e.percent}% off packs` : e.type === 'rush' ? 'spin every hour' : e.type === 'refund' ? `duplicates pay x${e.mult}` : '');
 setInterval(() => { if (state.eco) renderCoins(); }, 30000);
 
 $('coinBtn').onclick = () => openRewards('wheel');
@@ -1476,9 +1512,9 @@ async function openRewards(tab) {
   };
   const draw = (which) => {
     tab = which;
-    tabs.replaceChildren(...[['wheel', '🎡 Daily Wheel'], ['machine', '🎁 Tag Packs'], ['tags', '🏷 My Tags']].map(([id, label]) =>
+    tabs.replaceChildren(...[['wheel', '🎡 Daily Wheel'], ['machine', '🎁 Tag Packs'], ['tags', '🏷 My Tags'], ['codes', '🎟️ Codes']].map(([id, label]) =>
       h('button', { type: 'button', class: 'rw-tab' + (id === which ? ' on' : ''), onclick: () => draw(id) }, label)));
-    body.replaceChildren(which === 'wheel' ? wheelPane() : which === 'machine' ? machinePane(draw) : tagsPane(draw));
+    body.replaceChildren(which === 'wheel' ? wheelPane() : which === 'machine' ? machinePane(draw) : which === 'codes' ? codesPane(draw) : tagsPane(draw));
     shown = paintEvents(); syncRw();
   };
   const box = h('div', { class: 'modal rewards' },
@@ -1498,6 +1534,62 @@ async function openRewards(tab) {
   }, 1000);
 }
 const syncRw = () => { const el = document.getElementById('rwCoins'); if (el && state.eco) el.textContent = '🪙 ' + state.eco.coins; };
+
+/* ---- celebration when a code is redeemed ---- */
+function chime(kind) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    audioCtx = audioCtx || new AC(); const c = audioCtx; if (c.state === 'suspended') c.resume();
+    const t0 = c.currentTime, note = (f, at, dur, vol, type = 'triangle') => { const o = c.createOscillator(), g = c.createGain(); o.type = type; o.frequency.value = f; g.gain.setValueAtTime(0.0001, t0 + at); g.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur); o.connect(g); g.connect(c.destination); o.start(t0 + at); o.stop(t0 + at + dur + 0.05); };
+    if (kind === 'open') { [523, 659, 784, 1047, 1319].forEach((f, i) => note(f, 0.55 + i * 0.09, 0.5, 0.16)); note(2093, 0.95, 0.9, 0.07, 'sine'); }
+    else if (kind === 'rumble') { for (let i = 0; i < 6; i++) note(120 + i * 18, i * 0.1, 0.12, 0.1, 'square'); }
+    else if (kind === 'coin') { note(1568, 0, 0.12, 0.09, 'square'); note(2093, 0.07, 0.2, 0.09, 'square'); }
+  } catch (e) { /* sound is optional */ }
+}
+function redeemCelebration(r) {
+  const rw = r.reward || {}, tag = rw.tag, col = tag ? RARITY_COLOR[tag.rarity] || '#ffd23f' : '#ffd23f';
+  document.getElementById('redeemFx')?.remove();
+  const calm = calmMotion();
+  const parts = [];
+  if (!calm) {
+    for (let i = 0; i < 34; i++) { const a = (i / 34) * Math.PI * 2 + Math.random() * 0.3, d = 140 + Math.random() * 260; parts.push(h('span', { class: 'rd-part', style: `--dx:${Math.cos(a) * d}px;--dy:${Math.sin(a) * d - 40}px;--rot:${Math.random() * 720 - 360}deg;animation-delay:${1.05 + Math.random() * 0.25}s;font-size:${18 + Math.random() * 18}px` }, ['🪙', '✨', '⭐', '🪙', '💫'][i % 5])); }
+    for (let i = 0; i < 70; i++) parts.push(h('i', { class: 'fx-piece', style: `left:${Math.random() * 100}%;background:${['#ffd23f', '#ff8a3d', '#4ade80', '#38bdf8', '#e879f9', '#fff'][i % 6]};animation-delay:${1.2 + Math.random() * 1.2}s;animation-duration:${2.2 + Math.random() * 1.6}s` }));
+  }
+  const coinNum = h('b', { class: 'rd-num' }, '0');
+  const cards = [];
+  if (rw.coins) cards.push(h('div', { class: 'rd-card rd-coins' }, h('div', { class: 'rd-ico' }, '🪙'), h('div', { class: 'rd-big' }, '+', coinNum), h('div', { class: 'rd-lbl' }, 'coins')));
+  if (tag) cards.push(h('div', { class: 'rd-card rd-tag', style: `--rc:${col}` }, h('div', { class: 'rd-ico' }, tag.icon || '🏷️'), h('div', { class: 'rd-big' }, tag.name), h('div', { class: 'rd-lbl' }, tag.rarity.toUpperCase() + (rw.duplicate ? ` · you had it, so +${rw.refund} coins` : ' · NEW TAG!'))));
+  const fx = h('div', { id: 'redeemFx', class: 'redeemfx' + (calm ? ' calm' : ''), role: 'dialog', 'aria-label': 'Code redeemed' },
+    h('div', { class: 'rd-rays', style: `--rc:${col}` }), h('div', { class: 'rd-flash' }),
+    h('div', { class: 'rd-ticket' }, '🎟️'),
+    h('div', { class: 'rd-title' }, '🎉 Code redeemed!'),
+    h('div', { class: 'rd-cards' }, cards), ...parts,
+    h('div', { class: 'rd-hint' }, 'Click anywhere to close'));
+  document.body.append(fx);
+  const done = () => { fx.classList.add('out'); setTimeout(() => fx.remove(), 450); document.removeEventListener('keydown', esc); };
+  const esc = (e) => { if (e.key === 'Escape') done(); };
+  fx.addEventListener('click', done); document.addEventListener('keydown', esc); setTimeout(() => { if (document.body.contains(fx)) done(); }, 7000);
+  if (!calm) { chime('rumble'); setTimeout(() => chime('open'), 50); }
+  // count the coins up
+  const target = Number(rw.coins) || 0, start = performance.now() + 1100;
+  const tick = (now) => { if (!document.body.contains(fx)) return; const k = Math.min(1, Math.max(0, (now - start) / 1200)); coinNum.textContent = Math.round(target * (1 - Math.pow(1 - k, 3))).toLocaleString('en-US'); if (k < 1) requestAnimationFrame(tick); };
+  if (calm) coinNum.textContent = target.toLocaleString('en-US'); else requestAnimationFrame(tick);
+}
+
+function codesPane(redraw) {
+  const input = h('input', { type: 'text', maxlength: 24, placeholder: 'Enter a code', 'aria-label': 'Redeem code', autocomplete: 'off', spellcheck: 'false' });
+  const msg = h('div', { class: 'machine-msg' }, 'Got a code from the Owner? Type it here for a reward.');
+  const go = () => attempt(async () => {
+    if (!input.value.trim()) return toast('Type a code first');
+    const r = await api('/codes/redeem', 'POST', { code: input.value });
+    takeEco(r); syncRw(); input.value = '';
+    msg.textContent = '🎉 ' + r.message; msg.classList.add('won');
+    redeemCelebration(r);
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+  return h('div', { class: 'codebox' }, h('p', { class: 'rw-sub' }, 'Redeem a code'), h('div', { class: 'code-row' }, input, h('button', { type: 'button', class: 'btn primary small', onclick: go }, 'Redeem')), msg,
+    h('div', { class: 'note' }, 'Each code can be used once per person. Codes can run out or expire.'));
+}
 
 function wheelPane() {
   const vals = state.eco.wheel, n = vals.length, seg = 360 / n;
@@ -1544,13 +1636,14 @@ const pctText = (p) => String(+p.toFixed(p < 1 ? 2 : 1));
 
 function machinePane(redraw) {
   const eco = state.eco, cost = eco.cost;
-  if (!eco.packs.some((p) => p.id === shopPack)) shopPack = eco.packs[0].id;
-  const pack = eco.packs.find((p) => p.id === shopPack);
+  const shopPacks = eco.packs.filter((p) => !p.closed && !(p.until && ecoNow() >= p.until));
+  if (!shopPacks.some((p) => p.id === shopPack)) shopPack = (shopPacks.find((p) => p.until) || shopPacks[0]).id;
+  const pack = shopPacks.find((p) => p.id === shopPack);
   const owned = new Set(eco.owned);
-  const packRow = h('div', { class: 'packs' }, eco.packs.map((p) => {
+  const packRow = h('div', { class: 'packs' }, shopPacks.map((p) => {
     const mine = eco.tags.filter((t) => t.pack === p.id && owned.has(t.id)).length, all = eco.tags.filter((t) => t.pack === p.id).length;
     return h('button', { type: 'button', class: 'packcard' + (p.id === shopPack ? ' on' : ''), onclick: () => { shopPack = p.id; redraw('machine'); } },
-      h('span', { class: 'pk-ico' }, p.icon), h('b', {}, p.name), h('small', {}, `${mine}/${all} collected`));
+      h('span', { class: 'pk-ico' }, p.icon), h('b', {}, p.name), h('small', {}, `${mine}/${all} collected`), p.until ? h('span', { class: 'pk-limited' }, '⏳ LIMITED · leaves Nov 1') : null);
   }));
   const reel = h('div', { class: 'reel' }, h('span', { class: 'reel-text' }, pack.icon));
   const msg = h('div', { class: 'machine-msg' }, pack.blurb);
@@ -1683,6 +1776,7 @@ function editEntry(e) {
 /* ------------------------------------------------------ friends and direct messages */
 
 state.fr = { friends: [], incoming: [], outgoing: [], unread: {}, last: {} };
+state.perks = state.perks || { troll: false, community: false };
 const D = { active: null, msgs: [], view: null, list: null, chat: null, feed: null, search: '', typing: {}, pendingImage: null };
 const dmOpen = () => !!(D.view && D.view.isConnected);
 const userName = (id) => (userById(id) || { username: 'Someone' }).username;
@@ -1769,7 +1863,8 @@ function drawFriends() {
     const l = lastOf(id), typing = (D.typing[id] || 0) > Date.now();
     const sub = typing ? 'typing…' : l ? (l.from === state.me ? 'You: ' : '') + l.text : (userById(id) || {}).online ? 'Online' : 'Say hi';
     return personRow(id, h('span', { class: 'dm-meta' }, l ? h('span', { class: 'dm-when' }, ago2(l.ts)) : null,
-      fr.unread[id] ? h('span', { class: 'dm-unread' }, String(fr.unread[id])) : null), () => openChat(id), sub);
+      fr.unread[id] ? h('span', { class: 'dm-unread' }, String(fr.unread[id])) : null,
+      h('button', { type: 'button', class: 'mini dm-call' + (inCallWith(id) ? ' live' : ''), 'data-uid': id, title: inCallWith(id) ? 'Hang up' : 'Call ' + userName(id) + ' privately', onclick: (e) => { e.stopPropagation(); callFriend(id); } }, inCallWith(id) ? '📵' : '📞')), () => openChat(id), sub);
   };
   D.list.replaceChildren(
     h('div', { class: 'dm-title' }, h('h3', {}, '💬 Messages'),
@@ -1855,7 +1950,8 @@ function drawChat() {
       h('button', { type: 'button', class: 'dm-back', title: 'Back to friends', onclick: () => { D.active = null; D.view.classList.remove('has-chat'); drawFriends(); drawChat(); } }, '‹'),
       u ? h('div', { class: 'dm-av' }, avatar(u, true), h('i', { class: 'dm-dot' + (u.online ? ' on' : '') })) : null,
       h('div', { class: 'dm-who' }, h('b', {}, u ? u.username : 'Unknown', u ? userTag(u) : null), h('span', { class: 'dm-status' }, u && u.online ? 'Online' : 'Offline')),
-      h('button', { type: 'button', class: 'mini danger', style: 'margin-left:auto', onclick: async () => {
+      h('button', { type: 'button', class: 'btn small dm-callbtn' + (inCallWith(id) ? ' live' : ''), 'data-uid': id, style: 'margin-left:auto', title: inCallWith(id) ? 'Hang up' : 'Start a private voice call', onclick: () => callFriend(id) }, inCallWith(id) ? '📵 Hang up' : '📞 Call'),
+      h('button', { type: 'button', class: 'mini danger', onclick: async () => {
         if (await confirmBox('Remove friend?', `${u ? u.username : 'This person'} will be removed from your friends and you will not be able to message each other.`, 'Remove')) { D.active = null; if (D.view) D.view.classList.remove('has-chat'); await frAct('/friends/' + id, 'DELETE'); drawChat(); }
       } }, 'Unfriend'),
       h('button', { type: 'button', class: 'dm-close', title: 'Close messages (Esc)', onclick: closeDm }, '✕')),
@@ -2063,6 +2159,8 @@ async function openOwnerPanel() {
   const luckMult = sel([[2, 'x2'], [3, 'x3'], [5, 'x5'], [10, 'x10']], 3), luckMin = mins();
   const dblMult = sel([[2, 'x2'], [3, 'x3']], 2), dblMin = mins();
   const salePct = sel([[25, '25% off'], [50, '50% off'], [75, '75% off']], 50), saleMin = mins();
+  const rushMin = mins(), refMult = sel([[2, 'x2'], [3, 'x3'], [5, 'x5']], 2), refMin = mins();
+  const jackAmt = h('input', { type: 'number', value: 1000, min: 100, max: 100000, 'aria-label': 'Jackpot coins' });
   const rainAmt = h('input', { type: 'number', value: 100, min: 1, max: 10000, 'aria-label': 'Coins per person' });
   const evRow = (icon, title, desc, controls, go, label = 'Start') => h('div', { class: 'ev-row' }, h('div', { class: 'ev-info' }, h('b', {}, `${icon} ${title}`), h('small', {}, desc)),
     h('div', { class: 'ev-ctl' }, controls, h('button', { class: 'btn primary small', onclick: go }, label)));
@@ -2072,7 +2170,12 @@ async function openOwnerPanel() {
     evRow('🎡', 'Double Coins', 'The Daily Wheel pays more', [dblMult, dblMin], () => start({ type: 'double', mult: Number(dblMult.value), minutes: Number(dblMin.value) })),
     evRow('🏷️', 'Pack Sale', 'Tag packs cost less', [salePct, saleMin], () => start({ type: 'sale', percent: Number(salePct.value), minutes: Number(saleMin.value) })),
     evRow('🎁', 'Coin Rain', 'Gives every member coins right now', [rainAmt], () => start({ type: 'gift', amount: Number(rainAmt.value) }), 'Give'),
-    evRow('🔄', 'Free Spin For All', 'Everyone can spin the wheel again now', [], () => start({ type: 'freespin' })));
+    evRow('🔄', 'Free Spin For All', 'Everyone can spin the wheel again now', [], () => start({ type: 'freespin' })),
+    evRow('⚡', 'Spin Rush', 'The Daily Wheel can be spun once an hour', [rushMin], () => start({ type: 'rush', minutes: Number(rushMin.value) })),
+    evRow('♻️', 'Duplicate Bonus', 'Duplicate tags pay back more coins', [refMult, refMin], () => start({ type: 'refund', mult: Number(refMult.value), minutes: Number(refMin.value) })),
+    evRow('🍬', 'Trick or Treat', 'Everyone gets a random 25 to 400 coin treat', [], () => start({ type: 'treat' }), 'Give'),
+    evRow('📦', 'Free Pack For All', 'Everyone opens a free tag pack right now', [], () => start({ type: 'freepack' }), 'Give'),
+    evRow('💎', 'Jackpot Draw', '3 online members each win the jackpot', [jackAmt], () => start({ type: 'jackpot', amount: Number(jackAmt.value) }), 'Draw'));
 
   /* AutoMod */
   const amOn = h('input', { type: 'checkbox', checked: am.enabled });
@@ -2126,6 +2229,7 @@ async function openOwnerPanel() {
           h('button', { class: 'btn small ghost', onclick: () => attempt(async () => { await api(`/owner/reports/${r.id}`, 'DELETE'); reopen(); }) }, 'Delete'))))
         : h('div', { class: 'note' }, 'No reports yet.')),
     eventsSection,
+    ...ownerExtras(data, reopen),
     automodSection,
     h('section', {}, h('h4', {}, '🪙 Give coins'),
       h('div', { class: 'own-add' }, coinSel, coinAmt),
@@ -2227,12 +2331,470 @@ function playIntro() {
   setTimeout(finish, 2600);
 }
 
+/* ------------------------------------------------------------ v15: rules, panels, pranks, minigame, space access */
+
+const SYSTEM_ROLES = ['owner', 'admin', 'community', 'member'];
+
+/* ---- server rules ---- */
+let rulesData = null;
+async function loadRules() {
+  if (!rulesData) { try { rulesData = await (await fetch('/api/rules')).json(); } catch (e) { return null; } }
+  return rulesData;
+}
+function rulesNode(d) {
+  return h('div', { class: 'rules' }, d.sections.map((sec) => h('section', {}, h('h4', {}, sec.title),
+    h('ul', {}, sec.items.map(([t, x]) => h('li', {}, h('b', {}, t), h('span', {}, x)))))));
+}
+function openRules() {
+  loadRules().then((d) => {
+    if (!d) return toast('Could not load the rules');
+    openOverlay(h('div', { class: 'modal rulesmodal' }, h('h2', {}, '📜 ' + d.title), rulesNode(d),
+      h('div', { class: 'actions' }, h('button', { class: 'btn primary small', onclick: closeOverlay }, 'Got it'))));
+  });
+}
+$('rulesBtn').onclick = openRules;
+$('authAgree').addEventListener('change', () => { $('authBtn').disabled = registerMode && !$('authAgree').checked; });
+
+/* ---- pranks sent from the Troll Panel (people can switch them off in Settings > Appearance) ---- */
+const pranksOn = () => pref('pranks') !== 'off';
+const calmMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+const FX_NAMES = { jumpscare: 'a jump scare', blackout: 'lights out', spiders: 'a spider swarm', blood: 'blood', crack: 'a cracked screen', glitch: 'a glitch', eyes: 'creepy eyes', haunt: 'a haunting', hacked: 'a fake hack alert', shake: 'an earthquake', flip: 'a flip', zombie: 'zombie hands', confetti: 'confetti' };
+
+/* Scary sounds made with the browser's own audio (no files). Kept at a moderate volume. */
+let audioCtx = null;
+function scareSound(kind) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    audioCtx = audioCtx || new AC(); const c = audioCtx; if (c.state === 'suspended') c.resume();
+    const t0 = c.currentTime, master = c.createGain(); master.gain.value = 0.34; master.connect(c.destination);
+    const tone = (type, f0, f1, dur, vol, at = 0) => { const o = c.createOscillator(), g = c.createGain(); o.type = type; o.frequency.setValueAtTime(f0, t0 + at); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t0 + at + dur); g.gain.setValueAtTime(0.0001, t0 + at); g.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur); o.connect(g); g.connect(master); o.start(t0 + at); o.stop(t0 + at + dur + 0.05); };
+    const hiss = (dur, freq, vol, at = 0) => { const n = Math.max(1, Math.floor(c.sampleRate * dur)), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1; const src = c.createBufferSource(); src.buffer = buf; const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; const g = c.createGain(); g.gain.setValueAtTime(vol, t0 + at); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur); src.connect(f); f.connect(g); g.connect(master); src.start(t0 + at); };
+    if (kind === 'scream') { tone('sawtooth', 650, 2100, 1.3, 0.55); tone('square', 480, 1700, 1.3, 0.35, 0.03); tone('sawtooth', 300, 1300, 1.2, 0.35, 0.1); tone('sawtooth', 910, 2600, 1.1, 0.3, 0.05); tone('square', 1300, 520, 1.0, 0.25, 0.2); hiss(1.3, 3200, 0.7); hiss(0.9, 1200, 0.5, 0.15); tone('sine', 70, 35, 0.6, 0.9); }
+    else if (kind === 'boom') { tone('sine', 55, 22, 1.1, 1); hiss(0.5, 180, 0.9); hiss(0.25, 5000, 0.5); tone('square', 90, 40, 0.6, 0.35); }
+    else if (kind === 'thud') tone('sine', 110, 28, 0.35, 1);
+    else if (kind === 'heart') { for (let i = 0; i < 6; i++) { tone('sine', 70, 35, 0.18, 0.9, i * 0.9); tone('sine', 62, 32, 0.18, 0.7, i * 0.9 + 0.22); } }
+    else if (kind === 'crack') { hiss(0.2, 7000, 0.8); tone('triangle', 2400, 300, 0.25, 0.4); hiss(0.5, 4000, 0.3, 0.1); }
+    else if (kind === 'static') hiss(1.4, 2500, 0.7);
+    else if (kind === 'creak') { tone('sawtooth', 140, 60, 1.4, 0.18); tone('sawtooth', 150, 70, 1.2, 0.12, 0.2); }
+    else if (kind === 'laugh') { for (let i = 0; i < 5; i++) tone('sawtooth', 420 - i * 35, 300 - i * 30, 0.16, 0.35, i * 0.22); tone('sine', 60, 40, 1.2, 0.5); }
+    else if (kind === 'whisper') { hiss(1.6, 1800, 0.25); hiss(1.2, 2600, 0.2, 0.6); }
+    else if (kind === 'alarm') { for (let i = 0; i < 6; i++) tone('square', i % 2 ? 880 : 660, i % 2 ? 880 : 660, 0.18, 0.25, i * 0.2); }
+  } catch (e) { /* no audio available */ }
+}
+
+const FX = { layers: new Set(), timers: new Set(), undo: new Set() };
+function fxLayer(seconds, blocking) {
+  const layer = h('div', { class: 'fx-layer' + (blocking ? ' fx-block' : ''), 'aria-hidden': 'true' });
+  document.body.append(layer); FX.layers.add(layer);
+  fxLater(() => { layer.classList.add('fx-out'); fxLater(() => { layer.remove(); FX.layers.delete(layer); }, 600); }, seconds * 1000);
+  return layer;
+}
+function fxLater(fn, ms) { const id = setTimeout(() => { FX.timers.delete(id); fn(); }, ms); FX.timers.add(id); return id; }
+function fxClass(cls, seconds) { const app = $('app'); app.classList.add(cls); const off = () => app.classList.remove(cls); FX.undo.add(off); fxLater(off, seconds * 1000); }
+function fxStopAll() { // Escape or a click on a scare ends every prank at once
+  FX.layers.forEach((l) => l.remove()); FX.layers.clear(); FX.timers.forEach(clearTimeout); FX.timers.clear(); FX.undo.forEach((f) => f()); FX.undo.clear();
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (FX.layers.size || FX.undo.size)) fxStopAll(); });
+const frnd = (a, b) => a + Math.random() * (b - a);
+
+const FX_RUN = {
+  confetti() {
+    const layer = fxLayer(3), colors = ['#ff8a3d', '#f5b83d', '#4ade80', '#3b82f6', '#e879f9', '#ef4444'];
+    for (let i = 0; i < 90; i++) layer.append(h('i', { class: 'fx-piece', style: `left:${frnd(0, 100)}%;background:${colors[i % colors.length]};animation-delay:${frnd(0, 0.8)}s;animation-duration:${frnd(2, 3.6)}s;transform:rotate(${frnd(0, 360)}deg)` }));
+  },
+  jumpscare() {
+    // 1) darkness and a heartbeat  2) a pale face far away that slowly gets closer  3) it LUNGES at the screen with a scream
+    const layer = fxLayer(5.6, true), NS = 'http://www.w3.org/2000/svg';
+    let teeth = '';
+    for (let x = 52; x < 148; x += 10) teeth += `<polygon points="${x},176 ${x + 9},176 ${x + 4.5},${196 + (x % 3) * 4}" fill="#e8e2c0"/><polygon points="${x},206 ${x + 9},206 ${x + 4.5},${190 - (x % 3) * 3}" fill="#d9d2ac"/>`;
+    const face = h('div', { class: 'fx-sc-face' });
+    face.innerHTML = `<svg viewBox="0 0 200 250" xmlns="${NS}"><defs><radialGradient id="scSkin" cx="50%" cy="40%" r="65%"><stop offset="0" stop-color="#e3e5d8"/><stop offset=".7" stop-color="#8d9283"/><stop offset="1" stop-color="#2c2f29"/></radialGradient><radialGradient id="scEye"><stop offset="0" stop-color="#ff3b3b"/><stop offset="1" stop-color="#600"/></radialGradient></defs>
+      <path d="M100 10C44 10 24 62 28 120c3 58 28 118 72 118s69-60 72-118c4-58-16-110-72-110z" fill="url(#scSkin)" stroke="#000" stroke-width="3"/>
+      <path d="M60 40l14 30M140 36l-10 34M100 14v30M40 120l18 6M164 118l-20 8" stroke="#2a2d28" stroke-width="1.6" fill="none" opacity=".7"/>
+      <ellipse cx="66" cy="96" rx="25" ry="34" transform="rotate(-12 66 96)" fill="#000"/><ellipse cx="134" cy="96" rx="25" ry="34" transform="rotate(12 134 96)" fill="#000"/>
+      <circle cx="68" cy="102" r="7" fill="url(#scEye)"/><circle cx="132" cy="102" r="7" fill="url(#scEye)"/><circle cx="68" cy="102" r="2" fill="#fff"/><circle cx="132" cy="102" r="2" fill="#fff"/>
+      <path d="M93 138q-5 12 2 16M107 138q5 12-2 16" stroke="#000" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M44 168Q100 150 156 168Q150 252 100 252T44 168z" fill="#050000"/>${teeth}
+      <path d="M70 218q30 18 60 0" stroke="#7a0000" stroke-width="3" fill="none" opacity=".8"/></svg>`;
+    layer.append(h('div', { class: 'fx-sc-dark' }), face, h('div', { class: 'fx-sc-strobe' }), h('div', { class: 'fx-sc-noise' }), h('div', { class: 'fx-sc-vig' }));
+    scareSound('heart');
+    fxLater(() => scareSound('creak'), 1300);
+    fxLater(() => { scareSound('scream'); scareSound('boom'); fxClass('fx-quake', 1.6); }, 2650);
+    layer.addEventListener('click', fxStopAll);
+  },
+  blackout(secs) {
+    const layer = fxLayer(secs), dark = h('div', { class: 'fx-dark' }); layer.append(dark);
+    for (let i = 0; i < 4; i++) layer.append(h('span', { class: 'fx-eyes-dark', style: `left:${frnd(8, 88)}%;top:${frnd(10, 85)}%;animation-delay:${frnd(0.5, secs * 0.6)}s` }, '👀'));
+    const move = (e) => { const t = e.touches ? e.touches[0] : e; dark.style.setProperty('--x', t.clientX + 'px'); dark.style.setProperty('--y', t.clientY + 'px'); };
+    dark.style.setProperty('--x', '50vw'); dark.style.setProperty('--y', '50vh');
+    document.addEventListener('mousemove', move); document.addEventListener('touchmove', move);
+    FX.undo.add(() => { document.removeEventListener('mousemove', move); document.removeEventListener('touchmove', move); });
+    fxLater(() => { document.removeEventListener('mousemove', move); document.removeEventListener('touchmove', move); }, secs * 1000 + 700);
+    scareSound('creak'); fxLater(() => scareSound('heart'), 1200); fxLater(() => scareSound('laugh'), Math.max(2500, secs * 600));
+  },
+  spiders(secs) {
+    const layer = fxLayer(secs);
+    const n = Math.min(40, 14 + secs * 2);
+    for (let i = 0; i < n; i++) {
+      const side = Math.floor(Math.random() * 4), W = innerWidth, H = innerHeight;
+      const [x0, y0] = side === 0 ? [-60, frnd(0, H)] : side === 1 ? [W + 60, frnd(0, H)] : side === 2 ? [frnd(0, W), -60] : [frnd(0, W), H + 60];
+      const x1 = frnd(0, W), y1 = frnd(0, H), ang = Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI + 90;
+      const sp = h('span', { class: 'fx-spider', style: `left:${x0}px;top:${y0}px;--dx:${x1 - x0}px;--dy:${y1 - y0}px;--r:${ang}deg;font-size:${frnd(22, 46)}px;animation-delay:${frnd(0, secs * 0.45)}s;animation-duration:${frnd(2.2, 4.5)}s` }, '🕷️');
+      sp.addEventListener('click', () => { sp.textContent = '💥'; sp.classList.add('squashed'); scareSound('thud'); });
+      layer.append(sp);
+    }
+    scareSound('whisper'); fxLater(() => scareSound('creak'), 1500);
+  },
+  blood(secs) {
+    const layer = fxLayer(secs); layer.append(h('div', { class: 'fx-bloodmist' }));
+    for (let i = 0; i < 22; i++) layer.append(h('i', { class: 'fx-drip', style: `left:${frnd(0, 100)}%;width:${frnd(8, 26)}px;--len:${frnd(20, 75)}vh;animation-delay:${frnd(0, secs * 0.4)}s;animation-duration:${frnd(2.5, 5)}s` }));
+    scareSound('heart');
+  },
+  crack(secs) {
+    const layer = fxLayer(secs), NS = 'http://www.w3.org/2000/svg', W = innerWidth, H = innerHeight;
+    const svg = document.createElementNS(NS, 'svg'); svg.setAttribute('class', 'fx-crack'); svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const cx = frnd(W * 0.3, W * 0.7), cy = frnd(H * 0.3, H * 0.7), rays = 11;
+    for (let r = 0; r < rays; r++) {
+      let a = (r / rays) * Math.PI * 2 + frnd(-0.2, 0.2), x = cx, y = cy, d = `M${cx} ${cy}`;
+      for (let k = 0; k < 9; k++) { a += frnd(-0.35, 0.35); const l = frnd(40, 130); x += Math.cos(a) * l; y += Math.sin(a) * l; d += ` L${x.toFixed(0)} ${y.toFixed(0)}`; if (x < -50 || x > W + 50 || y < -50 || y > H + 50) break; }
+      const p = document.createElementNS(NS, 'path'); p.setAttribute('d', d); p.setAttribute('pathLength', '1'); p.style.animationDelay = frnd(0, 0.15) + 's'; svg.append(p);
+    }
+    for (let k = 1; k <= 3; k++) { const p = document.createElementNS(NS, 'circle'); p.setAttribute('cx', cx); p.setAttribute('cy', cy); p.setAttribute('r', k * 55 + frnd(-8, 8)); p.setAttribute('class', 'ring'); svg.append(p); }
+    layer.append(svg, h('div', { class: 'fx-flash' })); scareSound('crack'); fxClass('fx-shake', 0.5);
+  },
+  glitch(secs) {
+    fxClass('fx-glitch', 2.8); scareSound('static');
+    fxLater(() => {
+      const layer = fxLayer(Math.max(3, secs - 2), true);
+      layer.append(h('div', { class: 'fx-crash' }, h('div', { class: 'fx-crash-ico' }, '⚠️'), h('b', {}, 'Warms has stopped working'), h('small', {}, 'Windows is collecting more information about the problem…'), h('div', { class: 'fx-bar' }, h('i', {}))));
+      scareSound('alarm');
+      layer.addEventListener('click', fxStopAll);
+    }, 2800);
+  },
+  eyes(secs) {
+    const layer = fxLayer(secs), pairs = [];
+    for (let i = 0; i < 12; i++) {
+      const eye = () => h('span', { class: 'fx-eye' }, h('i', {}));
+      const pr = h('span', { class: 'fx-eyepair', style: `left:${frnd(3, 90)}%;top:${frnd(5, 88)}%;animation-delay:${frnd(0, secs * 0.5)}s;transform:scale(${frnd(0.7, 1.8)})` }, eye(), eye());
+      pairs.push(pr); layer.append(pr);
+    }
+    const move = (e) => { const t = e.touches ? e.touches[0] : e; for (const pr of pairs) { const r = pr.getBoundingClientRect(), a = Math.atan2(t.clientY - (r.top + r.height / 2), t.clientX - (r.left + r.width / 2)); pr.style.setProperty('--px', Math.cos(a) * 5 + 'px'); pr.style.setProperty('--py', Math.sin(a) * 5 + 'px'); } };
+    document.addEventListener('mousemove', move); FX.undo.add(() => document.removeEventListener('mousemove', move)); fxLater(() => document.removeEventListener('mousemove', move), secs * 1000 + 700);
+    scareSound('whisper'); fxLater(() => scareSound('creak'), 1800);
+  },
+  haunt(secs) {
+    const layer = fxLayer(secs); layer.append(h('div', { class: 'fx-cold' }));
+    for (let i = 0; i < 5; i++) layer.append(h('span', { class: 'fx-ghost', style: `top:${frnd(5, 75)}%;font-size:${frnd(60, 150)}px;animation-delay:${i * (secs / 7)}s;animation-duration:${frnd(3, 5)}s` }, '👻'));
+    scareSound('laugh'); fxLater(() => scareSound('whisper'), 1800);
+  },
+  hacked(secs) {
+    const layer = fxLayer(Math.max(8, secs), true);
+    const log = h('pre', { class: 'fx-term' }), count = h('div', { class: 'fx-count' }, '');
+    layer.append(h('div', { class: 'fx-hack' }, h('b', { class: 'fx-hack-title' }, '☠ ACCOUNT COMPROMISED ☠'), log, count)); scareSound('alarm');
+    const lines = ['> connecting to warms-server…', '> bypassing firewall… OK', '> reading messages… 100%', '> copying your coins… 🪙', '> uploading to evil-lair.exe…', '> ERASING EVERYTHING IN'];
+    lines.forEach((l, i) => fxLater(() => { log.textContent += l + '\n'; }, 600 + i * 700));
+    let n = 3; fxLater(() => { const tick = () => { count.textContent = n; if (n-- > 0) { scareSound('thud'); fxLater(tick, 900); } else { layer.querySelector('.fx-hack').replaceChildren(h('div', { class: 'fx-jk' }, '😈 JUST KIDDING!'), h('small', {}, 'Nothing happened. Your account is safe. Click anywhere to close.')); scareSound('laugh'); } }; tick(); }, 4800);
+    layer.addEventListener('click', fxStopAll);
+  },
+  shake(secs) { fxClass('fx-quake', secs); scareSound('thud'); fxLater(() => scareSound('thud'), 600); },
+  flip(secs) { fxClass('fx-flip', secs); },
+  zombie(secs) {
+    const layer = fxLayer(secs);
+    for (let i = 0; i < 9; i++) layer.append(h('span', { class: 'fx-hand', style: `left:${frnd(2, 92)}%;font-size:${frnd(50, 110)}px;animation-delay:${frnd(0, secs * 0.5)}s` }, '🧟‍♂️'));
+    layer.append(h('div', { class: 'fx-fogbottom' })); scareSound('whisper'); fxLater(() => scareSound('thud'), 900);
+  },
+};
+function runTroll(m) {
+  if (!pranksOn()) return;
+  const secs = Math.min(20, Math.max(3, Number(m.seconds) || 8));
+  if (m.by && m.effect !== 'confetti') toast2(`🎭 ${m.by} sent ${FX_NAMES[m.effect] || 'a prank'}. Press Esc to stop it`);
+  if (calmMotion() && m.effect !== 'confetti') return; // motion sensitivity: skip the animation, keep the message
+  const run = FX_RUN[m.effect]; if (run) run(secs);
+}
+
+function openTrollPanel() {
+  if (!state.perks.troll) return;
+  const target = h('select', { 'aria-label': 'Who gets it' }, h('option', { value: 'all' }, '👥 Everyone'),
+    state.users.filter((u) => u.id !== state.me).map((u) => h('option', { value: u.id }, u.username)));
+  const secs = h('select', { 'aria-label': 'How long' }, [[5, '5 seconds'], [8, '8 seconds'], [12, '12 seconds'], [20, '20 seconds']].map(([v, l]) => h('option', { value: v, selected: v === 8 }, l)));
+  const fx = [['jumpscare', '👹', 'Jump scare'], ['blackout', '🔦', 'Lights out'], ['spiders', '🕷️', 'Spider swarm'], ['blood', '🩸', 'Blood drip'],
+    ['crack', '💥', 'Cracked screen'], ['glitch', '📺', 'Glitch and crash'], ['eyes', '👁️', 'Creepy eyes'], ['haunt', '👻', 'Haunting'],
+    ['hacked', '💻', 'Fake hack alert'], ['zombie', '🧟', 'Zombie hands'], ['shake', '🌋', 'Earthquake'], ['flip', '🙃', 'Flip upside down']];
+  const go = (id) => attempt(async () => {
+    await api('/troll', 'POST', { effect: id, target: target.value, seconds: Number(secs.value) });
+    toast2('🎭 Sent!');
+  });
+  openOverlay(h('div', { class: 'ownerp panel-troll' },
+    h('button', { class: 'close', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('div', { class: 'own-crown' }, '🎭'),
+    h('h2', {}, 'Troll Panel'),
+    h('p', { class: 'own-sub' }, 'Spooky pranks with sound. They only show on screen and never change anyone’s data. People can press Esc to stop one, or turn pranks off in their settings.'),
+    h('div', { class: 'tr-row' }, h('label', {}, 'Who'), target, h('label', {}, 'For'), secs),
+    h('div', { class: 'tr-grid' }, fx.map(([id, ic, name]) => h('button', { type: 'button', class: 'tr-btn', onclick: () => go(id) }, h('span', { class: 'tr-ic' }, ic), name))),
+    h('button', { type: 'button', class: 'btn primary small tr-rand', onclick: () => go(fx[Math.floor(Math.random() * 9)][0]) }, '🎲 Random scare'),
+    h('div', { class: 'note' }, 'Be kind: the server rules still apply to pranks too. Sound only plays if their browser allows it.')));
+}
+$('trollBtn').onclick = openTrollPanel;
+
+/* ---- the minigame: Number Rush ---- */
+state.mg = { active: false };
+let mgOffset = 0;
+function renderMgBtn() {
+  const b = $('railGame');
+  const live = state.mg && state.mg.active && !state.mg.won && state.mg.endsAt - (Date.now() + mgOffset) > 0;
+  b.classList.toggle('hidden', !live);
+}
+async function loadMinigame() {
+  try { state.mg = await api('/minigame'); mgOffset = state.mg.now ? state.mg.now - Date.now() : 0; } catch (e) { return; }
+  renderMgBtn();
+}
+setInterval(() => { if (state.mg && state.mg.active) renderMgBtn(); }, 5000);
+$('railGame').onclick = () => openMinigame();
+
+function openMinigame() {
+  const g = state.mg;
+  if (!g || !g.active) return toast2('No minigame is running right now');
+  const box = h('div', { class: 'modal mg' });
+  let timerId = null, run = null;
+  const stop = () => { if (timerId) clearInterval(timerId); timerId = null; };
+  const close = () => { stop(); closeOverlay(); };
+  const left = () => Math.max(0, Math.round((g.endsAt - (Date.now() + mgOffset)) / 1000));
+  const fmtLeft = () => { const s = left(); return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`; };
+
+  function intro(msg) {
+    stop();
+    box.replaceChildren(
+      h('h2', {}, '🎮 Number Rush'),
+      h('p', {}, `Tap the numbers 1 to 16 in order. Finish in `, h('b', {}, `${g.limit} seconds`), ' or less to win ', h('b', {}, g.reward.label), '!'),
+      msg ? h('div', { class: 'mg-msg' }, msg) : null,
+      h('div', { class: 'note' }, `Ends in ${fmtLeft()} · ${g.wins} winner${g.wins === 1 ? '' : 's'}${g.maxWinners ? ` of ${g.maxWinners}` : ''} so far. You can try as many times as you like.`),
+      h('div', { class: 'actions' }, h('button', { class: 'btn ghost small', onclick: close }, 'Close'), h('button', { class: 'btn primary small', onclick: begin }, msg ? 'Try again' : 'Start')));
+  }
+  async function begin() {
+    let r;
+    try { r = await api('/minigame/start', 'POST'); } catch (e) { toast(e.message); await loadMinigame(); return close(); }
+    run = { layout: r.layout, next: 1, startedAt: performance.now(), limit: r.limit, id: r.id };
+    const timeEl = h('span', { class: 'mg-time' }, '0.0s'), nextEl = h('span', { class: 'mg-next' }, 'Find 1');
+    const grid = h('div', { class: 'mg-grid' }, run.layout.map((n) => h('button', { type: 'button', class: 'mg-cell', 'data-n': n, onclick: (e) => tap(n, e.currentTarget) }, String(n))));
+    box.replaceChildren(h('div', { class: 'mg-bar' }, nextEl, timeEl, h('span', { class: 'mg-lim' }, `/ ${run.limit}s`)), grid);
+    stop();
+    timerId = setInterval(() => {
+      const t = (performance.now() - run.startedAt) / 1000;
+      timeEl.textContent = t.toFixed(1) + 's';
+      timeEl.classList.toggle('late', t > run.limit);
+      if (t > run.limit + 0.3) { stop(); intro(`Time's up! You needed ${run.limit} seconds or less.`); }
+    }, 100);
+    function tap(n, el) {
+      if (n !== run.next) { el.classList.add('bad'); setTimeout(() => el.classList.remove('bad'), 250); return; }
+      el.classList.add('done'); el.disabled = true; run.next++;
+      nextEl.textContent = run.next > 16 ? 'Done!' : 'Find ' + run.next;
+      if (run.next > 16) finish();
+    }
+    async function finish() {
+      stop();
+      let res;
+      try { res = await api('/minigame/finish', 'POST', { id: run.id }); } catch (e) { toast(e.message); await loadMinigame(); return close(); }
+      if (res.won) {
+        takeEco(res); renderCoins();
+        if (!calmMotion()) runTroll({ effect: 'confetti', seconds: 3 });
+        state.mg.won = true; renderMgBtn();
+        box.replaceChildren(h('h2', {}, '🏆 You did it!'), h('p', {}, `${res.time.toFixed(1)} seconds.`), h('div', { class: 'mg-msg win' }, res.prize),
+          h('div', { class: 'actions' }, h('button', { class: 'btn primary small', onclick: close }, 'Nice')));
+      } else intro(res.reason);
+    }
+  }
+  intro();
+  openOverlay(box);
+}
+
+/* ---- Community Panel ---- */
+function openCommunityPanel() {
+  if (!state.perks.community) return;
+  const body = h('div', {});
+  const panel = h('div', { class: 'ownerp panel-comm' },
+    h('button', { class: 'close', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('div', { class: 'own-crown' }, '🌟'),
+    h('h2', {}, 'Community Panel'),
+    h('p', { class: 'own-sub' }, 'Announcements and a look after the community. ' + state.serverName),
+    body);
+  openOverlay(panel);
+  const load = async () => {
+    let d;
+    try { d = await api('/community/overview'); } catch (e) { return toast(e.message); }
+    state.mg = d.minigame || state.mg; mgOffset = d.now - Date.now(); renderMgBtn();
+    const say = h('textarea', { rows: 2, maxlength: 300, placeholder: 'Announcement for #general…', 'aria-label': 'Announcement' });
+    body.replaceChildren(
+      h('div', { class: 'own-stats three' }, h('div', {}, h('b', {}, d.members), h('span', {}, 'members')), h('div', {}, h('b', {}, d.online), h('span', {}, 'online')), h('div', {}, h('b', {}, d.muted.length), h('span', {}, 'muted'))),
+      h('section', {}, h('h4', {}, '📣 Announce in #general'), say,
+        h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => { await api('/community/announce', 'POST', { text: say.value }); say.value = ''; toast2('Posted in #general'); }) }, 'Post announcement'),
+        h('div', { class: 'note' }, 'It shows up in #general only, with a pop-up for people reading it.')),
+      h('section', {}, h('h4', {}, '🎉 Events'), d.events.length ? d.events.map((e) => h('div', { class: 'note' }, `${e.icon} ${e.name} is running until ${new Date(e.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`)) : h('div', { class: 'note' }, 'No event is running.'), h('div', { class: 'note' }, 'Only the Owner starts events.')),
+      h('section', {}, h('h4', {}, '🎮 Minigame'), d.minigame && d.minigame.active
+        ? h('div', { class: 'note' }, `Number Rush is live: ${d.minigame.limit}s for ${d.minigame.reward.label}. ${d.minigame.wins} winner(s) so far.`)
+        : h('div', { class: 'note' }, 'No minigame is running. The Owner starts them from the Owner Panel.')),
+      h('section', {}, h('h4', {}, '🆕 Newest members'),
+        d.newest.map((u) => h('div', { class: 'own-row' }, h('span', { class: 'own-name' }, u.username + (u.online ? ' · online' : '')), h('span', { class: 'time' }, fmtStamp(u.createdAt))))),
+      h('section', {}, h('h4', {}, '🔇 Muted right now'),
+        d.muted.length ? d.muted.map((m) => h('div', { class: 'own-row' }, h('span', { class: 'own-name' }, `${m.username} · ${m.minutes}m left`),
+          h('button', { class: 'btn small', onclick: () => attempt(async () => { await api(`/users/${m.id}/mute`, 'PUT', { minutes: 0 }); await refresh(); toast2(m.username + ' was unmuted'); load(); }) }, 'Unmute')))
+          : h('div', { class: 'note' }, 'Nobody is muted.')),
+      h('section', {}, h('h4', {}, '🚩 Open reports'),
+        d.reports.length ? d.reports.map((r) => h('div', { class: 'own-report' }, h('div', { class: 'rr-head' }, h('b', {}, r.username), h('span', { class: 'rr-kind' }, (REPORT_KINDS.find((k) => k[0] === r.kind) || [0, 'Other'])[1]), h('span', { class: 'time' }, fmtStamp(r.ts))), h('div', { class: 'rr-msg' }, r.message)))
+          : h('div', { class: 'note' }, 'No open reports.')));
+  };
+  load();
+}
+$('commBtn').onclick = openCommunityPanel;
+
+/* ---- Owner Panel extras: surprise event, minigame, troll access ---- */
+function ownerExtras(data, reopen) {
+  const surprise = h('section', {}, h('h4', {}, '🎲 Surprise event'),
+    h('div', { class: 'note' }, 'One press starts a random cool event for everyone, with confetti.'),
+    h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => { const r = await api('/owner/surprise', 'POST'); takeEco(await api('/economy')); toast2('🎲 ' + r.text); }) }, '🎲 Surprise everyone!'));
+
+  const rank = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4, croma: 5 };
+
+  const codesBox = h('div', {});
+  const cCode = h('input', { type: 'text', maxlength: 24, placeholder: 'Leave empty for a random one', 'aria-label': 'Code' });
+  const cCoins = h('input', { type: 'number', min: 0, max: 1000000, value: 100, 'aria-label': 'Coins' });
+  const cTag = h('select', { 'aria-label': 'Tag reward' }, h('option', { value: '' }, 'No tag'),
+    ((state.eco && state.eco.tags) || []).slice().sort((a, b) => rank[b.rarity] - rank[a.rarity]).map((t) => h('option', { value: t.id }, `${t.icon} ${t.name} (${t.rarity})`)));
+  const cUses = h('input', { type: 'number', min: 0, max: 100000, value: 0, 'aria-label': 'Uses' });
+  const cExp = h('select', { 'aria-label': 'Expires' }, [[0, 'Never'], [60, 'In 1 hour'], [1440, 'In 1 day'], [10080, 'In 7 days'], [43200, 'In 30 days']].map(([v, l]) => h('option', { value: v }, l)));
+  const drawCodes = (list) => codesBox.replaceChildren(...(list.length ? list.map((c) => h('div', { class: 'code-item' },
+    h('div', {}, h('b', {}, c.code), h('small', {}, [c.coins ? c.coins.toLocaleString('en-US') + ' coins' : '', c.tag ? (tagDef(c.tag) ? tagDef(c.tag).icon + ' ' + tagDef(c.tag).name : 'a tag') : ''].filter(Boolean).join(' + ') + ` · used ${c.uses}${c.maxUses ? '/' + c.maxUses : ''}` + (c.expiresAt ? (c.expiresAt <= Date.now() ? ' · expired' : ' · ends ' + new Date(c.expiresAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : ''))),
+    h('span', {}, h('button', { type: 'button', class: 'btn small', onclick: () => { try { navigator.clipboard.writeText(c.code); toast2('Copied ' + c.code); } catch (e) { toast(c.code); } } }, 'Copy'), ' ',
+      h('button', { type: 'button', class: 'btn small ghost', onclick: () => attempt(async () => { drawCodes((await api('/owner/codes/' + encodeURIComponent(c.code), 'DELETE')).codes); }) }, 'Delete')))) : [h('div', { class: 'note' }, 'No codes yet.')]));
+  api('/owner/codes').then((r) => drawCodes(r.codes)).catch(() => {});
+  const codes = h('section', {}, h('h4', {}, '🎟️ Redeem codes'),
+    h('div', { class: 'note' }, 'Make a code and tell people. When they type it in the Shop (Codes tab) they get the reward you pick. Each person can use a code once.'),
+    h('div', { class: 'code-form' },
+      h('label', { class: 'wide' }, 'Code', cCode), h('label', {}, '🪙 Coins', cCoins), h('label', {}, '🏷️ Tag', cTag), h('label', {}, 'Max uses (0 = no limit)', cUses), h('label', {}, 'Ends', cExp)),
+    h('button', { type: 'button', class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => {
+      const r = await api('/owner/codes', 'POST', { code: cCode.value, coins: Number(cCoins.value) || 0, tag: cTag.value || null, maxUses: Number(cUses.value) || 0, expiresIn: Number(cExp.value) || 0 });
+      cCode.value = ''; drawCodes(r.codes); toast2('Code ' + r.code.code + ' created');
+    }) }, 'Create code'),
+    codesBox);
+
+  const rtype = h('select', { 'aria-label': 'Prize' }, h('option', { value: 'coins' }, '🪙 Coins'), h('option', { value: 'tag' }, '🏷️ A tag'));
+  const amount = h('input', { type: 'number', value: 200, min: 1, max: 100000, 'aria-label': 'Coins' });
+  const tagSel = h('select', { 'aria-label': 'Tag prize' }, ((state.eco && state.eco.tags) || []).slice().sort((a, b) => rank[b.rarity] - rank[a.rarity]).map((t) => h('option', { value: t.id }, `${t.icon} ${t.name} (${t.rarity})`)));
+  const limit = h('input', { type: 'number', value: 25, min: 8, max: 120, 'aria-label': 'Seconds to beat' });
+  const minutes = h('input', { type: 'number', value: 10, min: 1, max: 120, 'aria-label': 'Minutes it stays open' });
+  const maxW = h('input', { type: 'number', value: 0, min: 0, max: 1000, 'aria-label': 'Winner limit' });
+  const sync = () => { amount.style.display = rtype.value === 'coins' ? '' : 'none'; tagSel.style.display = rtype.value === 'tag' ? '' : 'none'; };
+  rtype.addEventListener('change', sync); sync();
+  const status = h('div', { class: 'mg-status' });
+  const paint = () => {
+    const g = state.mg;
+    if (!g || !g.id) { status.replaceChildren(h('div', { class: 'note' }, 'No minigame has been played yet.')); return; }
+    status.replaceChildren(
+      h('div', { class: 'note ' + (g.active ? 'store-ok' : '') }, `${g.active ? '● LIVE' : 'Last game (ended)'}: beat ${g.limit}s for ${g.reward.label} · ${g.wins} winner${g.wins === 1 ? '' : 's'}`),
+      ...(g.winners || []).slice(0, 12).map((w) => h('div', { class: 'own-row' }, h('span', { class: 'own-name' }, '🏆 ' + w.username), h('span', { class: 'time' }, w.time.toFixed(1) + 's'))),
+      g.active ? h('button', { class: 'btn danger small', style: 'margin-top:6px', onclick: () => attempt(async () => { state.mg = await api('/owner/minigame', 'DELETE'); renderMgBtn(); paint(); toast2('Minigame ended'); }) }, 'End it now') : null);
+  };
+  api('/minigame').then((g) => { state.mg = g; mgOffset = g.now ? g.now - Date.now() : 0; paint(); renderMgBtn(); }).catch(() => paint());
+  const mg = h('section', {}, h('h4', {}, '🎮 Minigame (Number Rush)'),
+    h('div', { class: 'note' }, 'Everyone gets a 🎮 button. Whoever taps 1 to 16 fast enough wins the prize. The server times it.'),
+    h('div', { class: 'mg-form' },
+      h('label', {}, 'Beat it in (seconds)', limit), h('label', {}, 'Prize', rtype), h('label', { class: 'amt' }, 'Amount', amount, tagSel),
+      h('label', {}, 'Stays open (minutes)', minutes), h('label', {}, 'Max winners (0 = anyone)', maxW)),
+    h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => {
+      state.mg = await api('/owner/minigame', 'POST', { limit: Number(limit.value), rewardType: rtype.value, amount: Number(amount.value), tag: tagSel.value, minutes: Number(minutes.value), maxWinners: Number(maxW.value) });
+      mgOffset = state.mg.now - Date.now(); renderMgBtn(); paint(); toast2('Minigame started. Everyone was told');
+    }) }, '🎮 Start minigame'), status);
+
+  const trollSet = new Set(data.troll || []);
+  const trollRows = state.users.filter((u) => u.id !== state.me).map((u) => {
+    const btn = h('button', { class: 'btn small' + (trollSet.has(u.id) ? ' primary' : ''), onclick: () => attempt(async () => {
+      const want = !trollSet.has(u.id);
+      await api('/owner/troll-access', 'PUT', { userId: u.id, allowed: want });
+      if (want) trollSet.add(u.id); else trollSet.delete(u.id);
+      btn.textContent = want ? 'Has it · take back' : 'Give'; btn.classList.toggle('primary', want);
+    }) }, trollSet.has(u.id) ? 'Has it · take back' : 'Give');
+    return h('div', { class: 'own-row' }, avatar(u, true), h('span', { class: 'own-name' }, u.username), btn);
+  });
+  const troll = h('section', {}, h('h4', {}, '🎭 Troll Panel'),
+    h('div', { class: 'note' }, 'You always have it. Give it to people you trust, and take it back any time.'),
+    h('button', { class: 'btn primary small', style: 'margin:8px 0', onclick: () => { closeOverlay(); openTrollPanel(); } }, '🎭 Open Troll Panel'),
+    h('button', { class: 'btn small', style: 'margin:8px 0 8px 8px', onclick: () => { closeOverlay(); openCommunityPanel(); } }, '🌟 Open Community Panel'),
+    trollRows.length ? trollRows : h('div', { class: 'note' }, 'Nobody else is here yet.'));
+  return [surprise, codes, mg, troll];
+}
+
+/* ---- new space: the Owner can limit it to some roles ---- */
+function roleChecklist(selected) {
+  const boxes = state.roles.filter((r) => r.id !== 'owner').map((r) => {
+    const cb = h('input', { type: 'checkbox', value: r.id, checked: selected.includes(r.id) });
+    return h('label', { class: 'own-check' }, cb, h('span', { class: 'dot', style: `background:${r.color};display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 6px` }), r.name);
+  });
+  return { node: h('div', { class: 'role-checks' }, boxes), value: () => boxes.map((b) => b.querySelector('input')).filter((i) => i.checked).map((i) => i.value) };
+}
+
+function accessEditor(sp, reopen) {
+  const cur = Array.isArray(sp.roles) ? sp.roles : [];
+  const list = roleChecklist(cur);
+  return h('div', { class: 'field', style: 'margin-top:18px' }, h('label', {}, 'WHO CAN SEE THIS SPACE (OWNER ONLY)'),
+    h('div', { class: 'note' }, sp.system ? 'The Staff Hub is only for the roles ticked below (you can always get in).' : 'Tick roles to make this space private to them. Tick nothing to open it to everyone. You can always get in.'),
+    list.node,
+    h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => { await api(`/spaces/${sp.id}/access`, 'PUT', { roles: list.value() }); await refresh(); toast2('Access saved'); reopen(); }) }, 'Save access'));
+}
+
+async function newSpace() {
+  if (!isAdmin()) return toast('Only the Owner and Admins can create spaces');
+  const name = h('input', { type: 'text', maxlength: 32, placeholder: 'Space name', 'aria-label': 'Space name' });
+  const list = isOwner() ? roleChecklist([]) : null;
+  const create = () => {
+    if (!name.value.trim()) return toast('Give the space a name');
+    attempt(async () => {
+      const r = await api('/spaces', 'POST', Object.assign({ name: name.value.trim() }, list && list.value().length ? { roles: list.value() } : {}));
+      closeOverlay(); await refresh(); state.spaceId = r.space.id; await switchChannel(r.channel.id); toast2('Created ' + r.space.name);
+    });
+  };
+  openOverlay(h('form', { class: 'modal', onsubmit: (e) => { e.preventDefault(); create(); } },
+    h('h2', {}, 'New space'), name,
+    list ? h('div', { class: 'field', style: 'margin-top:14px' }, h('label', {}, 'WHO CAN SEE IT (OWNER ONLY)'),
+      h('div', { class: 'note' }, 'Tick roles to make it private to them. Tick nothing and everyone can see it. You can change this later in the space settings.'), list.node) : null,
+    h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn ghost small', onclick: closeOverlay }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary small' }, 'Create'))));
+  name.focus();
+}
+
 /* ------------------------------------------------------------ voice chat
    Audio goes straight between browsers (WebRTC). The server only passes the handshake along. */
 
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
 const V = { room: null, local: null, peers: new Map(), muted: false, deaf: false, ctx: null, pending: false, screen: null, sharer: null, watching: null, sharePending: false };
 const wsSend = (o) => { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify(o)); };
+
+
+/* ---- private calls between friends ---- */
+const callRoom = (id) => 'dm:' + [state.me, id].sort().join(':');
+const callPeer = (room) => (room && room.startsWith('dm:') ? room.split(':').slice(1).find((x) => x !== state.me) : null);
+const inCallWith = (id) => V.room === callRoom(id);
+function callFriend(id) {
+  if (!state.fr || !state.fr.friends.includes(id)) return toast('You can only call your friends');
+  if (inCallWith(id)) return leaveVoice();
+  joinVoice(callRoom(id));
+}
+let ringTimer = null, ringAudio = null;
+function ringTone(on) {
+  clearInterval(ringAudio); ringAudio = null;
+  if (!on) return;
+  const beep = () => { try { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return; audioCtx = audioCtx || new AC(); const c = audioCtx; if (c.state === 'suspended') c.resume(); const t0 = c.currentTime; [0, 0.28].forEach((d) => { const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = d ? 880 : 660; g.gain.setValueAtTime(0.0001, t0 + d); g.gain.exponentialRampToValueAtTime(0.18, t0 + d + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.25); o.connect(g); g.connect(c.destination); o.start(t0 + d); o.stop(t0 + d + 0.3); }); } catch (e) { /* no sound */ } };
+  beep(); ringAudio = setInterval(beep, 1600);
+}
+function hideRing(room) { const el = $('callRing'); if (el && (!room || el.dataset.room === room)) { el.remove(); ringTone(false); clearTimeout(ringTimer); } }
+function showRing(m) {
+  hideRing();
+  const u = userById(m.from);
+  const el = h('div', { id: 'callRing', class: 'callring', 'data-room': m.room, role: 'alertdialog', 'aria-label': 'Incoming call' },
+    u ? avatar(u, true) : null,
+    h('div', { class: 'cr-text' }, h('b', {}, (u ? u.username : m.name) + ' is calling you'), h('small', {}, 'Private voice call')),
+    h('button', { type: 'button', class: 'cr-btn yes', title: 'Answer', onclick: () => { hideRing(); joinVoice(m.room); } }, '📞 Answer'),
+    h('button', { type: 'button', class: 'cr-btn no', title: 'Decline', onclick: () => { hideRing(); wsSend({ t: 'call-decline', room: m.room }); } }, '✕ Decline'));
+  document.body.append(el); ringTone(true);
+  ringTimer = setTimeout(() => hideRing(m.room), 46000);
+}
 
 async function joinVoice(room) {
   if (V.pending) return;
@@ -2467,17 +3029,19 @@ function renderVoice() {
       }));
   }));
   bar.classList.toggle('hidden', !V.room);
+  document.querySelectorAll('.dm-call, .dm-callbtn').forEach((b) => { const on = inCallWith(b.dataset.uid), big = b.classList.contains('dm-callbtn'); b.classList.toggle('live', on); b.textContent = on ? (big ? '📵 Hang up' : '📵') : (big ? '📞 Call' : '📞'); });
   syncScreen();
   if (V.room) {
-    const c = state.voiceChannels.find((x) => x.id === V.room);
+    const dmWith = callPeer(V.room), c = dmWith ? { name: 'Call with ' + userName(dmWith) } : state.voiceChannels.find((x) => x.id === V.room);
+    const alone = dmWith && !(((state.voice || {})[V.room]) || []).some((p) => p.userId !== state.me);
     const vb = (cls, icon, label, title, fn) => h('button', { class: 'vbtn ' + cls, title, onclick: fn }, h('span', { class: 'vb-ico' }, icon), h('span', { class: 'vb-lbl' }, label));
     bar.replaceChildren(
-      h('div', { class: 'vb-info' }, h('div', { class: 'vb-state' }, h('i', { class: 'pulse' }), 'Voice connected'), h('div', { class: 'vb-room' }, c ? '🔊 ' + c.name : '')),
+      h('div', { class: 'vb-info' }, h('div', { class: 'vb-state' }, h('i', { class: 'pulse' }), alone ? 'Calling…' : dmWith ? 'In a call' : 'Voice connected'), h('div', { class: 'vb-room' }, c ? (dmWith ? '📞 ' : '🔊 ') + c.name : '')),
       h('div', { class: 'vb-btns' },
         vb(V.muted ? 'off' : '', V.muted ? '🔇' : '🎤', V.muted ? 'Unmute' : 'Mute', V.muted ? 'You are muted. Click to turn your microphone back on' : 'Turn your microphone off', () => setVoiceState(!V.muted, V.deaf && V.muted ? false : V.deaf)),
         vb(V.deaf ? 'off' : '', V.deaf ? '🙉' : '🎧', V.deaf ? 'Hear' : 'Deafen', V.deaf ? 'You cannot hear anyone. Click to hear again' : 'Stop hearing everyone (also mutes you)', () => setVoiceState(!V.deaf, !V.deaf)),
         canShare() ? vb(V.screen ? 'live' : '', '🖥', V.screen ? 'Stop' : 'Share', V.screen ? 'You are sharing your screen. Click to stop' : 'Share your screen with everyone in this channel', () => (V.screen ? stopShare() : startShare())) : null,
-        vb('leave', '📞', 'Leave', 'Disconnect from this voice channel', () => leaveVoice())));
+        vb('leave', '📞', dmWith ? 'Hang up' : 'Leave', dmWith ? 'End the call' : 'Disconnect from this voice channel', () => leaveVoice())));
   }
 }
 window.addEventListener('beforeunload', () => { if (V.room) wsSend({ t: 'voice-leave' }); });

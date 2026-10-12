@@ -14,6 +14,10 @@
       <p id="authNote" class="auth-note hidden"></p>
       <label>USERNAME<input id="authUser" name="username" autocomplete="username" maxlength="24" required></label>
       <label>PASSWORD<input id="authPass" name="password" type="password" autocomplete="current-password" required></label>
+      <div id="authRulesWrap" class="auth-rules-wrap hidden">
+        <div id="authRules" class="auth-rules" tabindex="0" aria-label="Server Rules"></div>
+        <label class="auth-agree"><input id="authAgree" type="checkbox"> I have read and agree to the Server Rules</label>
+      </div>
       <div id="authErr" class="auth-err"></div>
       <button id="authBtn" class="btn primary" type="submit">Log In</button>
       <p class="auth-switch"><span id="authSwitchText">Need an account?</span> <a href="#" id="authSwitch">Register</a></p>
@@ -27,6 +31,7 @@
       <button id="railAnn" class="rail-chat rail-ann" type="button" title="Announcements (only the Owner posts)"></button>
       <button id="railDM" class="rail-chat rail-dm" type="button" title="Friends and messages">💬<span id="railDMBadge" class="rail-badge hidden"></span></button>
       <button id="railLog" class="rail-chat rail-log" type="button" title="Update log: what's new">📜<span id="railLogDot" class="rail-badge dot hidden"></span></button>
+      <button id="railGame" class="rail-chat rail-game hidden" type="button" title="A minigame is running! Win a prize">🎮</button>
       <div class="rail-sep"></div>
       <div id="railChats" class="rail-chats"></div>
       <button id="railAdd" class="rail-add hidden" type="button" title="New space">＋</button>
@@ -41,16 +46,21 @@
         <div id="voiceSection"><div class="cat voice"><span>VOICE CHANNELS</span></div>
         <div id="voiceList" class="voice-list"></div></div>
         <button id="reportBtn" class="reportlink" type="button">Report a problem</button>
+        <button id="rulesBtn" class="reportlink" type="button">Server rules</button>
       </div>
       <div id="voiceBar" class="voicebar hidden"></div>
       <footer class="userpanel">
         <div id="meAvatar" class="avatar"></div>
         <div class="me-text"><div id="meName" class="me-name"></div><div id="meRole" class="me-role"></div></div>
-        <button id="coinBtn" class="coin-chip" type="button" title="Coins and rewards"></button>
-        <button id="ownerBtn" class="icon-btn owner-btn hidden" title="Owner panel">&#9819;</button>
-        <button id="staffBtn" class="icon-btn hidden" title="Staff panel">&#128737;</button>
-        <button id="adminBtn" class="icon-btn hidden" title="Admin panel">&#9889;</button>
         <button id="settingsBtn" class="icon-btn" title="Settings">&#9881;</button>
+        <div class="up-actions">
+          <button id="coinBtn" class="coin-chip" type="button" title="Coins and rewards"></button>
+          <button id="ownerBtn" class="icon-btn owner-btn hidden" title="Owner panel">&#9819;</button>
+          <button id="adminBtn" class="icon-btn hidden" title="Admin panel">&#9889;</button>
+          <button id="commBtn" class="icon-btn hidden" title="Community panel">&#127775;</button>
+          <button id="staffBtn" class="icon-btn hidden" title="Staff panel">&#128737;</button>
+          <button id="trollBtn" class="icon-btn hidden" title="Troll panel">&#127917;</button>
+        </div>
       </footer>
     </aside>
 
