@@ -246,6 +246,7 @@ async function refresh() {
   state.voice = data.voice || {};
   state.serverName = data.serverName;
   state.annIcon = data.annIcon || null;
+  if (data.economy) state.eco = data.economy;
   state.spaces = data.spaces || [{ id: 'main', name: data.serverName }];
   if (state.spaceId !== ANN_SPACE && !state.spaces.some((x) => x.id === state.spaceId)) state.spaceId = state.spaces[0].id;
   if (!state.channels.some((c) => c.id === state.channelId && (c.spaceId || state.spaces[0].id) === state.spaceId)) {
@@ -347,6 +348,7 @@ const spaceInitials = (name) => (name.split(/\s+/).map((w) => w[0]).join('').sli
 
 function renderChrome() {
   updateTitle();
+  renderCoins();
   const sp = curSpace();
   $('serverName').textContent = sp.name;
   $('onlineCount').textContent = state.users.filter((u) => u.online).length + ' online';
@@ -424,6 +426,7 @@ function renderMembers() {
         onclick: (e) => showPopover(p, e.currentTarget),
       }, avatar(p, true), h('div', { class: 'mtext' },
         h('span', { class: 'mname', style: `color:${role.color}` }, p.username),
+        userTag(p),
         p.status ? h('span', { class: 'mstat' }, p.status) : null)))));
   }
   box.replaceChildren(...groups);
@@ -597,6 +600,7 @@ function messageNode(msg, prev) {
       h('div', { class: 'meta' },
         h('span', { class: 'author', style: `color:${color}`, onclick: (e) => author && showPopover(author, e.currentTarget) }, name),
         author ? roleTag(roleById(author.roleId)) : null,
+        author ? userTag(author) : null,
         msg.announce ? h('span', { class: 'tag' }, 'ANNOUNCEMENT') : null,
         h('span', { class: 'time' }, fmtStamp(msg.ts))),
       content),
@@ -791,7 +795,7 @@ function showPopover(user, anchor) {
     h('div', { class: 'pop-banner', style: `background:${role.color}` }),
     h('div', { class: 'pop-body' },
       avatar(user, true),
-      h('div', { class: 'pop-name' }, user.username),
+      h('div', { class: 'pop-name' }, user.username, userTag(user)),
       h('div', { class: 'pop-sub' }, (user.online ? 'Online' : 'Offline') + ' · Joined ' + new Date(user.createdAt).toLocaleDateString()),
       user.status ? h('div', { class: 'pop-status' }, user.status) : null,
       h('div', { class: 'pop-sec' }, h('h6', {}, 'Role'),
@@ -1348,6 +1352,158 @@ function signinToast(name) {
   document.body.append(t);
   setTimeout(() => t.classList.add('out'), 3200);
   setTimeout(() => t.remove(), 3800);
+}
+
+/* ------------------------------------------------- coins, wheel, tag machine */
+
+const RARITY_COLOR = { common: '#aab0b8', uncommon: '#4ade80', rare: '#38bdf8', epic: '#c084fc', legendary: '#fbbf24' };
+const tagDef = (id) => ((state.eco && state.eco.tags) || []).find((t) => t.id === id);
+
+// Small pill with a profile tag the person chose to show.
+function userTag(u) {
+  const t = u && u.tag && tagDef(u.tag);
+  if (!t) return null;
+  const c = RARITY_COLOR[t.rarity] || '#aab0b8';
+  return h('span', {
+    class: 'utag r-' + t.rarity, title: t.rarity + ' tag',
+    style: `color:${c};border-color:color-mix(in srgb, ${c} 60%, transparent);background:color-mix(in srgb, ${c} 14%, transparent)`,
+  }, t.name);
+}
+
+function takeEco(r) {
+  state.eco = Object.assign(state.eco || {}, {
+    coins: r.coins, nextSpinAt: r.nextSpinAt, owned: r.owned, equipped: r.equipped,
+    skew: r.now ? Date.now() - r.now : 0,
+  });
+  renderCoins();
+}
+function renderCoins() {
+  const b = $('coinBtn');
+  if (!b || !state.eco) return;
+  b.replaceChildren(h('span', { class: 'coin-ico' }, '🪙'), h('span', {}, String(state.eco.coins)));
+  b.classList.toggle('ready', spinWait() === 0);
+  b.title = spinWait() === 0 ? 'Your daily spin is ready!' : 'Coins and rewards';
+}
+const spinWait = () => (state.eco && state.eco.nextSpinAt ? Math.max(0, state.eco.nextSpinAt - (Date.now() - (state.eco.skew || 0))) : 0);
+function fmtWait(ms) {
+  const s = Math.ceil(ms / 1000), p = (n) => String(n).padStart(2, '0');
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
+}
+setInterval(() => { if (state.eco) renderCoins(); }, 30000);
+
+$('coinBtn').onclick = () => openRewards('wheel');
+
+function openRewards(tab) {
+  const body = h('div', { class: 'rw-body' });
+  const tabs = h('div', { class: 'rw-tabs' });
+  const draw = (which) => {
+    tab = which;
+    tabs.replaceChildren(...[['wheel', '🎡 Daily Wheel'], ['machine', '🎰 Tag Machine'], ['tags', '🏷 My Tags']].map(([id, label]) =>
+      h('button', { type: 'button', class: 'rw-tab' + (id === which ? ' on' : ''), onclick: () => draw(id) }, label)));
+    body.replaceChildren(which === 'wheel' ? wheelPane() : which === 'machine' ? machinePane(draw) : tagsPane(draw));
+  };
+  const box = h('div', { class: 'modal rewards' },
+    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('div', { class: 'rw-head' }, h('h2', {}, 'Rewards'), h('div', { class: 'rw-coins', id: 'rwCoins' }, '🪙 ' + state.eco.coins)),
+    tabs, body,
+    h('p', { class: 'rw-fine' }, 'Coins are just for fun — they have no real-world value and can’t be bought.'));
+  draw(tab);
+  openOverlay(box);
+}
+const syncRw = () => { const el = document.getElementById('rwCoins'); if (el) el.textContent = '🪙 ' + state.eco.coins; };
+
+function wheelPane() {
+  const vals = state.eco.wheel, n = vals.length, seg = 360 / n;
+  const colors = ['#ff8a3d', '#ffb347', '#ff6b35', '#ffd08a', '#ff9a52', '#e8590c', '#ffc078', '#f76707', '#fcc419', '#e03131'];
+  const grad = vals.map((_, i) => `${colors[i % colors.length]} ${i * seg}deg ${(i + 1) * seg}deg`).join(',');
+  const disc = h('div', { class: 'wheel', style: `background:conic-gradient(${grad})` },
+    vals.map((v, i) => h('span', { class: 'wlabel', style: `transform:rotate(${(i + 0.5) * seg}deg) translateY(-92px)` }, String(v))));
+  const result = h('div', { class: 'wheel-result' }, ' ');
+  const btn = h('button', { type: 'button', class: 'btn primary spin-btn' }, 'SPIN');
+  let spinning = false, rot = 0, timer = null;
+  const paint = () => {
+    const w = spinWait();
+    if (spinning) return;
+    btn.disabled = w > 0;
+    btn.textContent = w > 0 ? 'Next spin in ' + fmtWait(w) : 'SPIN';
+    if (w === 0 && timer) { clearInterval(timer); timer = null; renderCoins(); }
+  };
+  btn.onclick = async () => {
+    if (spinning || spinWait() > 0) return;
+    spinning = true; btn.disabled = true; btn.textContent = 'Spinning…'; result.textContent = ' ';
+    let r;
+    try { r = await api('/wheel/spin', 'POST'); }
+    catch (e) { spinning = false; toast(e.message); try { const x = await api('/economy'); takeEco(x); } catch {} paint(); return; }
+    rot += 360 * 6 + (360 - ((r.index + 0.5) * seg + (rot % 360)) % 360);
+    disc.style.transform = `rotate(${rot}deg)`;
+    setTimeout(() => {
+      spinning = false; takeEco(r); syncRw();
+      result.replaceChildren(h('b', {}, `+${r.won} coins!`));
+      result.classList.remove('pop'); void result.offsetWidth; result.classList.add('pop');
+      paint(); timer = setInterval(() => { if (!document.body.contains(btn)) { clearInterval(timer); timer = null; } else paint(); }, 1000);
+    }, 4600);
+  };
+  paint();
+  if (spinWait() > 0) timer = setInterval(() => { if (!document.body.contains(btn)) { clearInterval(timer); timer = null; } else paint(); }, 1000);
+  return h('div', { class: 'wheel-pane' },
+    h('p', { class: 'rw-sub' }, 'Spin once every 24 hours for free coins.'),
+    h('div', { class: 'wheel-wrap' }, h('div', { class: 'wheel-pointer' }), disc, h('div', { class: 'wheel-hub' })),
+    result, btn);
+}
+
+function machinePane(redraw) {
+  const cost = state.eco.cost;
+  const reel = h('div', { class: 'reel' }, h('span', { class: 'reel-text' }, '🎰'));
+  const msg = h('div', { class: 'machine-msg' }, `Each roll costs ${cost} coins`);
+  const btn = h('button', { type: 'button', class: 'btn primary roll-btn' }, `ROLL — ${cost} 🪙`);
+  const check = () => { btn.disabled = state.eco.coins < cost; if (btn.disabled) msg.textContent = `You need ${cost} coins — spin the wheel to earn more`; };
+  let busy = false;
+  btn.onclick = async () => {
+    if (busy) return; busy = true; btn.disabled = true;
+    reel.className = 'reel spinning'; msg.textContent = 'Rolling…';
+    const names = state.eco.tags.map((t) => t.name);
+    const text = reel.firstChild;
+    const flick = setInterval(() => { text.textContent = names[Math.floor(Math.random() * names.length)]; }, 70);
+    let r, err;
+    try { r = await api('/machine/roll', 'POST'); } catch (e) { err = e; }
+    await new Promise((ok) => setTimeout(ok, 1800));
+    clearInterval(flick); busy = false;
+    if (err) { reel.className = 'reel'; text.textContent = '🎰'; toast(err.message); check(); return; }
+    takeEco(r); syncRw();
+    const c = RARITY_COLOR[r.tag.rarity];
+    reel.className = 'reel won r-' + r.tag.rarity; reel.style.setProperty('--rc', c);
+    text.textContent = r.tag.name;
+    msg.replaceChildren(r.duplicate
+      ? h('span', {}, `Duplicate ${r.tag.rarity} tag — ${r.refund} coins back`)
+      : h('span', {}, h('b', { style: `color:${c}` }, 'NEW! '), `${r.tag.rarity} tag unlocked — equip it in My Tags`));
+    btn.disabled = state.eco.coins < cost;
+  };
+  check();
+  const odds = h('table', { class: 'odds' }, h('tbody', {}, state.eco.rarities.map((r) => {
+    const n = state.eco.tags.filter((t) => t.rarity === r.id).length;
+    return h('tr', {}, h('td', { style: `color:${RARITY_COLOR[r.id]}` }, r.label), h('td', {}, r.chance + '%'), h('td', { class: 'dim' }, n + ' tags'));
+  })));
+  return h('div', { class: 'machine-pane' },
+    h('p', { class: 'rw-sub' }, 'Roll for a profile tag. Rarer tags are harder to get.'),
+    reel, msg, btn,
+    h('h4', { class: 'odds-h' }, 'Chances'), odds);
+}
+
+function tagsPane(redraw) {
+  const eco = state.eco, owned = new Set(eco.owned);
+  const mk = (t) => {
+    const c = RARITY_COLOR[t.rarity], has = owned.has(t.id), on = eco.equipped === t.id;
+    return h('button', {
+      type: 'button', class: 'tagcard' + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
+      title: has ? (on ? 'Click to remove' : 'Click to wear') : 'Not unlocked yet',
+      onclick: () => { if (!has) return; attempt(async () => { takeEco(await api('/tags/equip', 'POST', { tag: on ? null : t.id })); redraw('tags'); }); },
+    }, h('span', { class: 'tc-name' }, has ? t.name : '???'), h('span', { class: 'tc-r' }, t.rarity), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
+  };
+  const order = state.eco.rarities.map((r) => r.id);
+  const sorted = eco.tags.slice().sort((a, b) => order.indexOf(b.rarity) - order.indexOf(a.rarity));
+  return h('div', { class: 'tags-pane' },
+    h('p', { class: 'rw-sub' }, `You have ${owned.size} of ${eco.tags.length} tags. Pick one to show next to your name.`),
+    h('div', { class: 'tagrid' }, sorted.map(mk)));
 }
 
 /* ------------------------------------------------------ report a problem */

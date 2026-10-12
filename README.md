@@ -88,3 +88,9 @@ Settings: `PORT` (default 3000) and `DATA_DIR` (default `./data`).
 ## Not included
 
 Video and screen sharing, direct messages, and password reset (an Owner or Admin can remove a user and they can re-register).
+
+## Coins, Daily Wheel and Tag Machine
+
+Everyone gets a free spin of the Daily Wheel every 24 hours (click the 🪙 coin chip by your name). Coins are play money only. Spend 100 coins on the Tag Machine for a random profile tag, then wear one from "My Tags" and it shows next to your name.
+
+Tag odds per roll: Common 60%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%. A duplicate gives some coins back. Owner and Admins can use the console command `givecoins <user> <amount>`. Odds and tags live at the top of the "coins, wheel, tags" section in `server.js`.

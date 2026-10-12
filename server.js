@@ -140,7 +140,7 @@ const hasAnyPerm = (u) => PERMS.some((p) => can(u, p));
 const muteLeft = (u) => (u.mutedUntil && u.mutedUntil > Date.now() ? Math.ceil((u.mutedUntil - Date.now()) / 60000) : 0);
 
 function publicUser(u) {
-  return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0 };
+  return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0, tag: u.tag && (u.tags || []).includes(u.tag) ? u.tag : null };
 }
 
 function auth(req, res, next) {
@@ -368,7 +368,99 @@ app.get('/api/bootstrap', auth, (req, res) => {
     voiceChannels: voiceChannels(),
     voice: voiceSnapshot(),
     perms: PERMS,
+    economy: { ...economyFor(req.user), ...economyInfo() },
   });
+});
+
+/* --------------------------------------------------- coins, wheel, tags */
+// Play money only: coins have no real-world value and cannot be bought.
+
+const SPIN_COOLDOWN = 24 * 60 * 60 * 1000;
+const MACHINE_COST = 100;
+const WHEEL = [ // value + weight per segment (weights add to 100)
+  { coins: 25, w: 15 }, { coins: 50, w: 15 }, { coins: 25, w: 15 }, { coins: 75, w: 10 }, { coins: 50, w: 15 },
+  { coins: 100, w: 12 }, { coins: 150, w: 5 }, { coins: 75, w: 10 }, { coins: 250, w: 2.5 }, { coins: 500, w: 0.5 },
+];
+const RARITIES = [ // chance of each rarity per roll, and coins back for a duplicate
+  { id: 'common', label: 'Common', chance: 60, refund: 20 },
+  { id: 'uncommon', label: 'Uncommon', chance: 25, refund: 35 },
+  { id: 'rare', label: 'Rare', chance: 10, refund: 60 },
+  { id: 'epic', label: 'Epic', chance: 4, refund: 120 },
+  { id: 'legendary', label: 'Legendary', chance: 1, refund: 250 },
+];
+const TAGS = [
+  { id: 'newbie', name: 'Newbie', rarity: 'common' }, { id: 'chill', name: 'Chill', rarity: 'common' },
+  { id: 'lurker', name: 'Lurker', rarity: 'common' }, { id: 'snacky', name: 'Snacky', rarity: 'common' },
+  { id: 'night-owl', name: 'Night Owl', rarity: 'uncommon' }, { id: 'gamer', name: 'Gamer', rarity: 'uncommon' },
+  { id: 'meme-lord', name: 'Meme Lord', rarity: 'uncommon' }, { id: 'vibes', name: 'Good Vibes', rarity: 'rare' },
+  { id: 'big-brain', name: 'Big Brain', rarity: 'rare' }, { id: 'speedrunner', name: 'Speedrunner', rarity: 'rare' },
+  { id: 'cozy-fire', name: 'Cozy Fire', rarity: 'epic' }, { id: 'sunburst', name: 'Sunburst', rarity: 'epic' },
+  { id: 'warm-legend', name: 'Warm Legend', rarity: 'legendary' }, { id: 'golden-goat', name: 'Golden Goat', rarity: 'legendary' },
+];
+const tagById = (id) => TAGS.find((t) => t.id === id);
+const rarityOf = (id) => RARITIES.find((r) => r.id === id);
+function pickWeighted(list, weight) {
+  const total = list.reduce((n, x) => n + weight(x), 0);
+  let r = crypto.randomInt(0, 1e6) / 1e6 * total;
+  for (const x of list) { r -= weight(x); if (r < 0) return x; }
+  return list[list.length - 1];
+}
+function econ(u) {
+  if (typeof u.coins !== 'number') u.coins = 0;
+  if (!Array.isArray(u.tags)) u.tags = [];
+  return u;
+}
+function economyFor(u) {
+  econ(u);
+  return {
+    coins: u.coins,
+    nextSpinAt: u.lastSpin ? u.lastSpin + SPIN_COOLDOWN : 0,
+    owned: u.tags,
+    equipped: u.tag || null,
+    now: Date.now(),
+  };
+}
+const economyInfo = () => ({
+  cost: MACHINE_COST,
+  wheel: WHEEL.map((s) => s.coins),
+  rarities: RARITIES,
+  tags: TAGS,
+});
+
+app.get('/api/economy', auth, (req, res) => res.json({ ...economyFor(req.user), ...economyInfo() }));
+
+app.post('/api/wheel/spin', auth, (req, res) => {
+  const u = econ(req.user);
+  if (u.lastSpin && Date.now() - u.lastSpin < SPIN_COOLDOWN) return res.status(429).json({ error: 'Come back later for your next spin', ...economyFor(u) });
+  const seg = pickWeighted(WHEEL.map((s, i) => ({ ...s, i })), (s) => s.w);
+  u.coins += seg.coins;
+  u.lastSpin = Date.now();
+  save();
+  res.json({ index: seg.i, won: seg.coins, ...economyFor(u) });
+});
+
+app.post('/api/machine/roll', auth, (req, res) => {
+  const u = econ(req.user);
+  if (rateLimited('roll:' + u.id, 20, 60000)) return res.status(429).json({ error: 'Slow down a little' });
+  if (u.coins < MACHINE_COST) return res.status(400).json({ error: `You need ${MACHINE_COST} coins to roll` });
+  u.coins -= MACHINE_COST;
+  const rarity = pickWeighted(RARITIES, (r) => r.chance);
+  const pool = TAGS.filter((t) => t.rarity === rarity.id);
+  const tag = pool[crypto.randomInt(0, pool.length)];
+  const duplicate = u.tags.includes(tag.id);
+  if (duplicate) u.coins += rarity.refund; else u.tags.push(tag.id);
+  save();
+  res.json({ tag, duplicate, refund: duplicate ? rarity.refund : 0, ...economyFor(u) });
+});
+
+app.post('/api/tags/equip', auth, (req, res) => {
+  const u = econ(req.user);
+  const id = req.body.tag ? String(req.body.tag) : null;
+  if (id && !u.tags.includes(id)) return res.status(400).json({ error: 'You do not own that tag yet' });
+  u.tag = id;
+  save();
+  broadcast({ t: 'members' });
+  res.json(economyFor(u));
 });
 
 /* -------------------------------------------------------------- messages */
@@ -938,6 +1030,7 @@ const HELP = [
   '  kick <user>                remove a member (they can register again)',
   '  purge <channel> [count]    delete the last [count] messages, or all of them',
   '  rename <new server name>   rename the server',
+  '  givecoins <user> <amount>  give (or take, with a minus) play coins',
 ];
 
 app.post('/api/admin/command', auth, (req, res) => {
@@ -946,7 +1039,7 @@ app.post('/api/admin/command', auth, (req, res) => {
   if (!raw) return res.json({ output: [] });
   const [cmd, ...args] = tokenize(raw);
   const rest = raw.slice(cmd.length).trim();
-  const AUDITED = ['announce', 'role', 'kick', 'purge', 'rename'];
+  const AUDITED = ['announce', 'role', 'kick', 'purge', 'rename', 'givecoins'];
   const done = (output, ok = true) => {
     if (ok && AUDITED.includes(cmd.toLowerCase())) audit(req.user, 'console: ' + raw.slice(0, 120));
     res.json({ output: [].concat(output), ok });
@@ -1041,6 +1134,18 @@ app.post('/api/admin/command', auth, (req, res) => {
       save();
       broadcast({ t: 'server' });
       return done(`Server renamed to ${name}.`);
+    }
+
+    case 'givecoins': {
+      const amount = parseInt(args[args.length - 1], 10);
+      const target = findUser(args.slice(0, -1).join(' '));
+      if (args.length < 2 || !Number.isFinite(amount)) return done('Usage: givecoins <user> <amount>', false);
+      if (!target) return done(`No member named "${args.slice(0, -1).join(' ')}".`, false);
+      econ(target);
+      target.coins = Math.max(0, Math.min(1e9, target.coins + amount));
+      save();
+      broadcast({ t: 'members' });
+      return done(`${target.username} now has ${target.coins} coins.`);
     }
 
     default:
