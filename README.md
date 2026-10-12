@@ -100,3 +100,17 @@ The Owner Panel has a **Give coins** box (pick a member, type an amount; a minus
 ## Keeping your data when you update
 
 Accounts, chats and coins live in `db.json` inside the data folder. On Render that folder must be on a **disk** (render.yaml asks for one, and disks need a paid plan). Without a disk, every update wipes the site. The Owner Panel shows "permanent disk" or a warning, and the startup log prints `Storage: permanent` or `Storage: TEMPORARY`. As an extra safety net use **Owner Panel -> Save & restore -> Download backup** before updating and **Restore from backup** afterwards. Uploaded pictures are not in the backup.
+
+## Shop, packs and events
+
+The coin chip is now the **Shop** button. It has the Daily Wheel, **Tag Packs** (Halloween, Dog, Space and Ocean, 15 tags each) and **My Tags**. Rarities per pack: Common 59.9%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%, **Croma 0.1%** (animated rainbow). Packs, tags and odds are defined at the top of the "coins, wheel, tags" section in `server.js`; adding a pack means adding one block of 15 tags.
+
+The Owner Panel has an **Events** section: Lucky Hour (rare chances x2 to x10), Double Coins (wheel), Pack Sale, Coin Rain (coins for everyone) and Free Spin For All. Everyone gets a banner and a post in #announcements.
+
+## Friends and messages
+
+Press the 💬 button on the far-left bar (or a person's name -> Add friend). Once a request is accepted you can send each other direct messages.
+
+## AutoMod
+
+A filter bot blocks cuss words and spam (flooding, repeating the same message, link spam, mass mentions) in channels, edits and DMs. The first offence is a **10 minute mute**, then it doubles (20, 40, 80...). Strikes fade after a week. The Owner and Admins are not filtered unless the Owner turns on "Also filter Owner and Admins" (handy for testing). Owner and Admins lift mutes from the Staff panel or the console (`unmute <user>`); the Owner can also do it, and add extra banned words, in the Owner Panel's AutoMod section.

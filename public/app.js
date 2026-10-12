@@ -73,6 +73,14 @@ function colorFor(name) {
   return `hsl(${x % 360} 45% 45%)`;
 }
 
+// Avatar that opens the person's profile card (with the Add friend button) when pressed.
+function clickableAvatar(user) {
+  const a = avatar(user, false);
+  a.style.cursor = 'pointer';
+  a.addEventListener('click', (e) => showPopover(user, a));
+  return a;
+}
+
 function avatar(user, withDot) {
   const a = h('div', { class: 'avatar', style: `background:${colorFor(user.username)}` }, user.avatar ? null : user.username[0].toUpperCase());
   if (user.avatar) a.style.cssText = `background:url("${user.avatar}") center/cover`;
@@ -246,7 +254,7 @@ async function refresh() {
   state.voice = data.voice || {};
   state.serverName = data.serverName;
   state.annIcon = data.annIcon || null;
-  if (data.economy) state.eco = data.economy;
+  if (data.economy) takeEco(data.economy);
   state.spaces = data.spaces || [{ id: 'main', name: data.serverName }];
   if (state.spaceId !== ANN_SPACE && !state.spaces.some((x) => x.id === state.spaceId)) state.spaceId = state.spaces[0].id;
   if (!state.channels.some((c) => c.id === state.channelId && (c.spaceId || state.spaces[0].id) === state.spaceId)) {
@@ -263,6 +271,7 @@ async function start() {
   $('app').classList.remove('hidden');
   state.channelId = null;
   await refresh();
+  loadFriends();
   playIntro();
   connectWs();
   $('msgInput').focus();
@@ -319,6 +328,12 @@ function connectWs() {
       attempt(async () => { await refresh(); });
     } else if (m.t === 'purged') {
       if (m.channelId === state.channelId) attempt(loadMessages);
+    } else if (m.t === 'dm') {
+      pushDm(m.msg);
+    } else if (m.t === 'friends') {
+      if (m.kind === 'request') toast2(`🤝 ${m.from} sent you a friend request`);
+      else if (m.kind === 'accepted') toast2(`🎉 ${m.from} is now your friend`);
+      attempt(loadFriends);
     } else if (m.t === 'typing') {
       if (m.userId === state.me) return;
       (state.typing[m.channelId] ||= {})[m.userId] = Date.now() + 4000;
@@ -545,7 +560,7 @@ function roleTag(role) {
 
 function messageNode(msg, prev) {
   if (msg.system) {
-    return h('div', { class: 'msg sysmsg', 'data-mid': msg.id },
+    return h('div', { class: 'msg sysmsg' + (msg.bot ? ' bot' : ''), 'data-mid': msg.id },
       h('span', { class: 'sys-arrow' }, '➜'),
       h('span', { class: 'sys-text' }, renderText(msg.content)),
       h('span', { class: 'time' }, fmtStamp(msg.ts)),
@@ -554,7 +569,7 @@ function messageNode(msg, prev) {
   const author = userById(msg.userId);
   const name = author ? author.username : 'Removed user';
   const color = author ? roleById(author.roleId).color : '#8e9297';
-  const grouped = prev && prev.userId === msg.userId && msg.ts - prev.ts < 5 * 60 * 1000 && !msg.announce && !prev.announce && !msg.replyTo;
+  const grouped = prev && !prev.system && prev.userId === msg.userId && msg.ts - prev.ts < 5 * 60 * 1000 && !msg.announce && !prev.announce && !msg.replyTo;
   const own = msg.userId === state.me;
   const canDelete = own || can('delete_messages');
   const pinged = mentionsMe(msg);
@@ -594,7 +609,7 @@ function messageNode(msg, prev) {
       h('div', { class: 'gutter' }, fmtTime(msg.ts)), h('div', { class: 'body' }, content), tools);
   }
   return h('div', { class: 'msg first' + cls, 'data-mid': msg.id },
-    author ? avatar(author, false) : h('div', { class: 'avatar', style: 'background:#555' }, '?'),
+    author ? clickableAvatar(author) : h('div', { class: 'avatar', style: 'background:#555' }, '?'),
     h('div', { class: 'body' },
       reply,
       h('div', { class: 'meta' },
@@ -798,6 +813,7 @@ function showPopover(user, anchor) {
       h('div', { class: 'pop-name' }, user.username, userTag(user)),
       h('div', { class: 'pop-sub' }, (user.online ? 'Online' : 'Offline') + ' · Joined ' + new Date(user.createdAt).toLocaleDateString()),
       user.status ? h('div', { class: 'pop-status' }, user.status) : null,
+      friendButtons(user),
       h('div', { class: 'pop-sec' }, h('h6', {}, 'Role'),
         options.length
           ? h('select', {
@@ -1236,6 +1252,7 @@ function openStaffPanel() {
         opts.map((o) => h('option', { value: o.id, selected: o.id === u.roleId }, o.name)),
         opts.some((o) => o.id === u.roleId) ? null : h('option', { value: u.roleId, selected: true, disabled: true }, r.name)));
     }
+    if (left && !canKick(u) && isAdmin() && u.id !== state.me) actions.push(h('button', { class: 'mini', onclick: () => act(() => api(`/users/${u.id}/mute`, 'PUT', { minutes: 0 })) }, 'Unmute'));
     if (canKick(u)) {
       if (left) actions.push(h('button', { class: 'mini', onclick: () => act(() => api(`/users/${u.id}/mute`, 'PUT', { minutes: 0 })) }, 'Unmute'));
       else actions.push(h('select', { class: 's-sel', 'aria-label': 'Mute ' + u.username, onchange: (e) => { const m = parseInt(e.target.value, 10); e.target.value = ''; if (m) act(() => api(`/users/${u.id}/mute`, 'PUT', { minutes: m })); } },
@@ -1354,70 +1371,98 @@ function signinToast(name) {
   setTimeout(() => t.remove(), 3800);
 }
 
-/* ------------------------------------------------- coins, wheel, tag machine */
+/* ------------------------------------------------------ shop: coins, wheel, packs */
 
-const RARITY_COLOR = { common: '#c4b5d9', uncommon: '#ff9f1c', rare: '#84e04f', epic: '#c05cff', legendary: '#ff4d3d' }; // Halloween: ghost, pumpkin, slime, potion, blood
+const RARITY_COLOR = { common: '#aab0b8', uncommon: '#4ade80', rare: '#38bdf8', epic: '#c084fc', legendary: '#fbbf24', croma: '#ff5fd2' };
+const RARITY_ORDER = ['croma', 'legendary', 'epic', 'rare', 'uncommon', 'common'];
 const tagDef = (id) => ((state.eco && state.eco.tags) || []).find((t) => t.id === id);
+let shopPack = 'halloween';
 
 // Small pill with a profile tag the person chose to show.
 function userTag(u) {
   const t = u && u.tag && tagDef(u.tag);
   if (!t) return null;
   const c = RARITY_COLOR[t.rarity] || '#aab0b8';
-  return h('span', {
-    class: 'utag r-' + t.rarity, title: t.rarity + ' tag',
-    style: `color:${c};border-color:color-mix(in srgb, ${c} 60%, transparent);background:color-mix(in srgb, ${c} 14%, transparent)`,
-  }, (t.icon ? t.icon + ' ' : '') + t.name);
+  return h('span', Object.assign({ class: 'utag r-' + t.rarity, title: t.rarity + ' tag' },
+    t.rarity === 'croma' ? {} : { style: `color:${c};border-color:color-mix(in srgb, ${c} 60%, transparent);background:color-mix(in srgb, ${c} 14%, transparent)` }),
+    (t.icon ? t.icon + ' ' : '') + t.name);
 }
 
+const ECO_KEYS = ['coins', 'nextSpinAt', 'owned', 'equipped', 'cost', 'baseCost', 'events', 'tags', 'packs', 'rarities', 'wheel'];
 function takeEco(r) {
-  state.eco = Object.assign(state.eco || {}, {
-    coins: r.coins, nextSpinAt: r.nextSpinAt, owned: r.owned, equipped: r.equipped,
-    skew: r.now ? Date.now() - r.now : 0,
-  });
+  const eco = state.eco || {};
+  for (const k of ECO_KEYS) if (r[k] !== undefined) eco[k] = r[k];
+  if (r.now) eco.skew = Date.now() - r.now;
+  state.eco = eco;
   renderCoins();
 }
+const ecoNow = () => Date.now() - ((state.eco && state.eco.skew) || 0);
+const evLeft = (e) => Math.max(0, e.until - ecoNow());
+const liveEvents = () => ((state.eco && state.eco.events) || []).filter((e) => evLeft(e) > 0);
+const spinWait = () => (state.eco && state.eco.nextSpinAt ? Math.max(0, state.eco.nextSpinAt - ecoNow()) : 0);
 function renderCoins() {
   const b = $('coinBtn');
   if (!b || !state.eco) return;
-  b.replaceChildren(h('span', { class: 'coin-ico' }, '🪙'), h('span', {}, String(state.eco.coins)));
+  b.replaceChildren(h('span', { class: 'coin-ico' }, '🛍️'), h('span', { class: 'coin-lbl' }, 'Shop'), h('span', { class: 'coin-n' }, '🪙 ' + state.eco.coins));
   b.classList.toggle('ready', spinWait() === 0);
-  b.title = spinWait() === 0 ? 'Your daily spin is ready!' : 'Coins and rewards';
+  b.classList.toggle('hot', liveEvents().length > 0);
+  b.title = spinWait() === 0 ? 'Shop: your daily spin is ready!' : 'Shop: coins, wheel and tag packs';
 }
-const spinWait = () => (state.eco && state.eco.nextSpinAt ? Math.max(0, state.eco.nextSpinAt - (Date.now() - (state.eco.skew || 0))) : 0);
 function fmtWait(ms) {
   const s = Math.ceil(ms / 1000), p = (n) => String(n).padStart(2, '0');
   return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
 }
+const fmtLeft = (ms) => { const s = Math.ceil(ms / 1000), p = (n) => String(n).padStart(2, '0'); return s >= 3600 ? `${Math.floor(s / 3600)}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}` : `${Math.floor(s / 60)}:${p(s % 60)}`; };
+const evDetail = (e) => (e.type === 'luck' ? `rare chances x${e.mult}` : e.type === 'double' ? `wheel pays x${e.mult}` : e.type === 'sale' ? `${e.percent}% off packs` : '');
 setInterval(() => { if (state.eco) renderCoins(); }, 30000);
 
 $('coinBtn').onclick = () => openRewards('wheel');
 
-function openRewards(tab) {
+async function openRewards(tab) {
+  try { takeEco(await api('/economy')); } catch (e) { return toast(e.message); }
   const body = h('div', { class: 'rw-body' });
   const tabs = h('div', { class: 'rw-tabs' });
+  const evBar = h('div', { class: 'rw-events' });
+  let shown = '';
+  const paintEvents = () => {
+    const evs = liveEvents();
+    const sig = evs.map((e) => e.id).join();
+    evBar.replaceChildren(...evs.map((e) => h('div', { class: 'rw-ev ev-' + e.type }, h('span', { class: 'rw-ev-ico' }, e.icon),
+      h('span', { class: 'rw-ev-txt' }, h('b', {}, e.name), ' ' + evDetail(e)), h('span', { class: 'rw-ev-time' }, fmtLeft(evLeft(e))))));
+    return sig;
+  };
   const draw = (which) => {
     tab = which;
-    tabs.replaceChildren(...[['wheel', '🕸️ Spooky Wheel'], ['machine', '🔮 Cauldron'], ['tags', '🎃 My Tags']].map(([id, label]) =>
+    tabs.replaceChildren(...[['wheel', '🎡 Daily Wheel'], ['machine', '🎁 Tag Packs'], ['tags', '🏷 My Tags']].map(([id, label]) =>
       h('button', { type: 'button', class: 'rw-tab' + (id === which ? ' on' : ''), onclick: () => draw(id) }, label)));
     body.replaceChildren(which === 'wheel' ? wheelPane() : which === 'machine' ? machinePane(draw) : tagsPane(draw));
+    shown = paintEvents(); syncRw();
   };
   const box = h('div', { class: 'modal rewards' },
     h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
-    h('div', { class: 'rw-head' }, h('h2', {}, '🎃 Spooky Rewards'), h('div', { class: 'rw-coins', id: 'rwCoins' }, '🪙 ' + state.eco.coins)),
-    tabs, body,
+    h('div', { class: 'rw-head' }, h('h2', {}, '🛍️ Shop'), h('div', { class: 'rw-coins', id: 'rwCoins' }, '🪙 ' + state.eco.coins)),
+    evBar, tabs, body,
     h('p', { class: 'rw-fine' }, 'Coins are just for fun — they have no real-world value and can’t be bought.'));
   draw(tab);
   openOverlay(box);
+  const tick = setInterval(async () => {
+    if (!document.body.contains(box)) return clearInterval(tick);
+    const sig = paintEvents();
+    if (sig !== shown) { // an event ended: ask the server for the new prices and odds
+      shown = sig;
+      try { takeEco(await api('/economy')); if (tab !== 'wheel') draw(tab); else shown = paintEvents(); } catch {}
+    }
+  }, 1000);
 }
-const syncRw = () => { const el = document.getElementById('rwCoins'); if (el) el.textContent = '🪙 ' + state.eco.coins; };
+const syncRw = () => { const el = document.getElementById('rwCoins'); if (el && state.eco) el.textContent = '🪙 ' + state.eco.coins; };
 
 function wheelPane() {
   const vals = state.eco.wheel, n = vals.length, seg = 360 / n;
-  const colors = ['#ff7a00', '#4b1d6b', '#ff9f1c', '#2a1636', '#ff6a00', '#6a2c91', '#ffb347', '#3a1d4f', '#8fe23a', '#d7261e'];
+  const colors = ['#ff8a3d', '#ffb347', '#ff6b35', '#ffd08a', '#ff9a52', '#e8590c', '#ffc078', '#f76707', '#fcc419', '#e03131'];
   const grad = vals.map((_, i) => `${colors[i % colors.length]} ${i * seg}deg ${(i + 1) * seg}deg`).join(',');
+  const dbl = Math.max(1, ...liveEvents().filter((e) => e.type === 'double').map((e) => e.mult));
   const disc = h('div', { class: 'wheel', style: `background:conic-gradient(${grad})` },
-    vals.map((v, i) => h('span', { class: 'wlabel', style: `transform:rotate(${(i + 0.5) * seg}deg) translateY(-92px)` }, String(v))));
+    vals.map((v, i) => h('span', { class: 'wlabel', style: `transform:rotate(${(i + 0.5) * seg}deg) translateY(-92px)` }, String(v * dbl))));
   const result = h('div', { class: 'wheel-result' }, ' ');
   const btn = h('button', { type: 'button', class: 'btn primary spin-btn' }, 'SPIN');
   let spinning = false, rot = 0, timer = null;
@@ -1428,65 +1473,80 @@ function wheelPane() {
     btn.textContent = w > 0 ? 'Next spin in ' + fmtWait(w) : 'SPIN';
     if (w === 0 && timer) { clearInterval(timer); timer = null; renderCoins(); }
   };
+  const watch = () => { timer = setInterval(() => { if (!document.body.contains(btn)) { clearInterval(timer); timer = null; } else paint(); }, 1000); };
   btn.onclick = async () => {
     if (spinning || spinWait() > 0) return;
     spinning = true; btn.disabled = true; btn.textContent = 'Spinning…'; result.textContent = ' ';
     let r;
     try { r = await api('/wheel/spin', 'POST'); }
-    catch (e) { spinning = false; toast(e.message); try { const x = await api('/economy'); takeEco(x); } catch {} paint(); return; }
+    catch (e) { spinning = false; toast(e.message); try { takeEco(await api('/economy')); } catch {} paint(); return; }
     rot += 360 * 6 + (360 - ((r.index + 0.5) * seg + (rot % 360)) % 360);
     disc.style.transform = `rotate(${rot}deg)`;
     setTimeout(() => {
       spinning = false; takeEco(r); syncRw();
-      result.replaceChildren(h('b', {}, `+${r.won} coins!`));
+      result.replaceChildren(h('b', {}, `+${r.won} coins!`), r.won !== r.base ? h('small', {}, ` (event bonus x${r.won / r.base})`) : null);
       result.classList.remove('pop'); void result.offsetWidth; result.classList.add('pop');
-      paint(); timer = setInterval(() => { if (!document.body.contains(btn)) { clearInterval(timer); timer = null; } else paint(); }, 1000);
+      paint(); watch();
     }, 4600);
   };
   paint();
-  if (spinWait() > 0) timer = setInterval(() => { if (!document.body.contains(btn)) { clearInterval(timer); timer = null; } else paint(); }, 1000);
+  if (spinWait() > 0) watch();
   return h('div', { class: 'wheel-pane' },
-    h('p', { class: 'rw-sub' }, 'One free spin every 24 hours. Beware the bats.'),
+    h('p', { class: 'rw-sub' }, 'One free spin every 24 hours.'),
     h('div', { class: 'wheel-wrap' }, h('div', { class: 'wheel-pointer' }), disc, h('div', { class: 'wheel-hub' })),
     result, btn);
 }
 
+const pctText = (p) => String(+p.toFixed(p < 1 ? 2 : 1));
+
 function machinePane(redraw) {
-  const cost = state.eco.cost;
-  const reel = h('div', { class: 'reel' }, h('span', { class: 'reel-text' }, '🔮'));
-  const msg = h('div', { class: 'machine-msg' }, `Each roll costs ${cost} coins`);
-  const btn = h('button', { type: 'button', class: 'btn primary roll-btn' }, `BREW — ${cost} 🪙`);
+  const eco = state.eco, cost = eco.cost;
+  if (!eco.packs.some((p) => p.id === shopPack)) shopPack = eco.packs[0].id;
+  const pack = eco.packs.find((p) => p.id === shopPack);
+  const owned = new Set(eco.owned);
+  const packRow = h('div', { class: 'packs' }, eco.packs.map((p) => {
+    const mine = eco.tags.filter((t) => t.pack === p.id && owned.has(t.id)).length, all = eco.tags.filter((t) => t.pack === p.id).length;
+    return h('button', { type: 'button', class: 'packcard' + (p.id === shopPack ? ' on' : ''), onclick: () => { shopPack = p.id; redraw('machine'); } },
+      h('span', { class: 'pk-ico' }, p.icon), h('b', {}, p.name), h('small', {}, `${mine}/${all} collected`));
+  }));
+  const reel = h('div', { class: 'reel' }, h('span', { class: 'reel-text' }, pack.icon));
+  const msg = h('div', { class: 'machine-msg' }, pack.blurb);
+  const price = cost < eco.baseCost ? [h('s', {}, String(eco.baseCost)), ' ' + cost] : [String(cost)];
+  const btn = h('button', { type: 'button', class: 'btn primary roll-btn' }, 'OPEN PACK — ', ...price, ' 🪙');
   const check = () => { btn.disabled = state.eco.coins < cost; if (btn.disabled) msg.textContent = `You need ${cost} coins — spin the wheel to earn more`; };
   let busy = false;
   btn.onclick = async () => {
     if (busy) return; busy = true; btn.disabled = true;
-    reel.className = 'reel spinning'; msg.textContent = 'Rolling…';
-    const names = state.eco.tags.map((t) => (t.icon || '') + ' ' + t.name);
+    reel.className = 'reel spinning'; msg.textContent = 'Opening…';
+    const names = eco.tags.filter((t) => t.pack === shopPack).map((t) => (t.icon || '') + ' ' + t.name);
     const text = reel.firstChild;
     const flick = setInterval(() => { text.textContent = names[Math.floor(Math.random() * names.length)]; }, 70);
     let r, err;
-    try { r = await api('/machine/roll', 'POST'); } catch (e) { err = e; }
+    try { r = await api('/machine/roll', 'POST', { pack: shopPack }); } catch (e) { err = e; }
     await new Promise((ok) => setTimeout(ok, 1800));
     clearInterval(flick); busy = false;
-    if (err) { reel.className = 'reel'; text.textContent = '🔮'; toast(err.message); check(); return; }
+    if (err) { reel.className = 'reel'; text.textContent = pack.icon; toast(err.message); check(); return; }
     takeEco(r); syncRw();
     const c = RARITY_COLOR[r.tag.rarity];
     reel.className = 'reel won r-' + r.tag.rarity; reel.style.setProperty('--rc', c);
     text.textContent = (r.tag.icon || '') + ' ' + r.tag.name;
+    const label = r.tag.rarity.toUpperCase();
     msg.replaceChildren(r.duplicate
       ? h('span', {}, `Duplicate ${r.tag.rarity} tag — ${r.refund} coins back`)
-      : h('span', {}, h('b', { style: `color:${c}` }, 'NEW! '), `${r.tag.rarity} tag unlocked — equip it in My Tags`));
-    btn.disabled = state.eco.coins < cost;
+      : h('span', {}, h('b', { class: 'newtag r-' + r.tag.rarity, style: `color:${c}` }, 'NEW ' + label + '! '), 'Wear it from My Tags'));
+    btn.disabled = state.eco.coins < state.eco.cost;
   };
   check();
-  const odds = h('table', { class: 'odds' }, h('tbody', {}, state.eco.rarities.map((r) => {
-    const n = state.eco.tags.filter((t) => t.rarity === r.id).length;
-    return h('tr', {}, h('td', { style: `color:${RARITY_COLOR[r.id]}` }, r.label), h('td', {}, r.chance + '%'), h('td', { class: 'dim' }, n + ' tags'));
+  const luck = Math.max(1, ...liveEvents().filter((e) => e.type === 'luck').map((e) => e.mult));
+  const w = (r) => (r.id === 'common' ? r.chance : r.chance * luck);
+  const total = eco.rarities.reduce((n, r) => n + w(r), 0);
+  const odds = h('table', { class: 'odds' }, h('tbody', {}, eco.rarities.map((r) => {
+    const n = eco.tags.filter((t) => t.pack === shopPack && t.rarity === r.id).length;
+    return h('tr', {}, h('td', { class: 'od-' + r.id, style: `color:${RARITY_COLOR[r.id]}` }, r.label), h('td', {}, pctText(w(r) / total * 100) + '%'), h('td', { class: 'dim' }, n + (n === 1 ? ' tag' : ' tags')));
   })));
   return h('div', { class: 'machine-pane' },
-    h('p', { class: 'rw-sub' }, 'Drop 100 coins in the cauldron for a spooky profile tag. The rarer the tag, the thinner the odds.'),
-    reel, msg, btn,
-    h('h4', { class: 'odds-h' }, 'Chances'), odds);
+    packRow, reel, msg, btn,
+    h('h4', { class: 'odds-h' }, 'Chances' + (luck > 1 ? ` · 🍀 luck x${luck} is on` : '')), odds);
 }
 
 function tagsPane(redraw) {
@@ -1494,16 +1554,160 @@ function tagsPane(redraw) {
   const mk = (t) => {
     const c = RARITY_COLOR[t.rarity], has = owned.has(t.id), on = eco.equipped === t.id;
     return h('button', {
-      type: 'button', class: 'tagcard' + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
+      type: 'button', class: 'tagcard r-' + t.rarity + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
       title: has ? (on ? 'Click to remove' : 'Click to wear') : 'Not unlocked yet',
       onclick: () => { if (!has) return; attempt(async () => { takeEco(await api('/tags/equip', 'POST', { tag: on ? null : t.id })); redraw('tags'); }); },
     }, h('span', { class: 'tc-name' }, has ? (t.icon || '') + ' ' + t.name : '👁 ???'), h('span', { class: 'tc-r' }, t.rarity), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
   };
-  const order = state.eco.rarities.map((r) => r.id);
-  const sorted = eco.tags.slice().sort((a, b) => order.indexOf(b.rarity) - order.indexOf(a.rarity));
   return h('div', { class: 'tags-pane' },
     h('p', { class: 'rw-sub' }, `You have ${owned.size} of ${eco.tags.length} tags. Pick one to show next to your name.`),
-    h('div', { class: 'tagrid' }, sorted.map(mk)));
+    eco.packs.map((p) => {
+      const mine = eco.tags.filter((t) => t.pack === p.id);
+      const sorted = mine.slice().sort((a, b) => RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity));
+      return h('section', { class: 'tg-pack' }, h('h4', {}, `${p.icon} ${p.name}`, h('small', {}, ` ${mine.filter((t) => owned.has(t.id)).length}/${mine.length}`)),
+        h('div', { class: 'tagrid' }, sorted.map(mk)));
+    }));
+}
+
+/* ------------------------------------------------------ friends and direct messages */
+
+state.fr = { friends: [], incoming: [], outgoing: [], unread: {} };
+const D = { active: null, msgs: [], box: null, list: null, chat: null };
+const dmOpen = () => !!(D.box && document.body.contains(D.box));
+const userName = (id) => (userById(id) || { username: 'Someone' }).username;
+
+function renderDmBadge() {
+  const n = Object.values(state.fr.unread).reduce((a, b) => a + b, 0) + state.fr.incoming.length;
+  const b = $('railDMBadge');
+  b.textContent = n > 9 ? '9+' : String(n);
+  b.classList.toggle('hidden', !n);
+}
+async function loadFriends() {
+  try { state.fr = await api('/friends'); } catch { return; }
+  renderDmBadge();
+  if (dmOpen()) drawFriends();
+}
+const friendState = (id) => (state.fr.friends.includes(id) ? 'friend' : state.fr.incoming.includes(id) ? 'incoming' : state.fr.outgoing.includes(id) ? 'outgoing' : 'none');
+const frAct = (path, method, body) => attempt(async () => { state.fr = Object.assign(state.fr, await api(path, method, body)); renderDmBadge(); if (dmOpen()) drawFriends(); });
+
+$('railDM').onclick = () => openFriends();
+
+function openFriends(withId) {
+  if (withId) D.active = withId;
+  const list = h('div', { class: 'dm-list' }), chat = h('div', { class: 'dm-chat' });
+  const box = h('div', { class: 'modal dmwin' + (D.active ? ' has-chat' : '') },
+    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'), list, chat);
+  Object.assign(D, { box, list, chat });
+  openOverlay(box);
+  drawFriends();
+  if (D.active && state.fr.friends.includes(D.active)) openChat(D.active); else { D.active = null; box.classList.remove('has-chat'); drawChat(); }
+  loadFriends();
+}
+
+function personRow(id, extra, onclick) {
+  const u = userById(id);
+  if (!u) return null;
+  return h('div', { class: 'dm-row' + (D.active === id ? ' on' : ''), onclick },
+    h('div', { class: 'dm-av' }, avatar(u, true), h('i', { class: 'dm-dot' + (u.online ? ' on' : '') })),
+    h('span', { class: 'dm-name' }, u.username, userTag(u)), extra);
+}
+
+function drawFriends() {
+  const fr = state.fr;
+  const pick = h('select', { 'aria-label': 'Add a friend' }, h('option', { value: '' }, 'Add a friend…'),
+    state.users.filter((u) => u.id !== state.me && friendState(u.id) === 'none').map((u) => h('option', { value: u.id }, u.username)));
+  const add = h('button', { type: 'button', class: 'btn primary small', onclick: () => { if (!pick.value) return toast('Choose someone first'); frAct('/friends/request', 'POST', { userId: pick.value }); toast2('Friend request sent'); } }, 'Add');
+  D.list.replaceChildren(
+      h('h3', {}, 'Friends'),
+      h('div', { class: 'dm-add' }, pick, add),
+      fr.incoming.length ? h('div', { class: 'dm-sec' }, h('h6', {}, 'Requests'),
+        fr.incoming.map((id) => personRow(id, h('span', { class: 'dm-btns' },
+          h('button', { type: 'button', class: 'mini', title: 'Accept', onclick: (e) => { e.stopPropagation(); frAct('/friends/accept', 'POST', { userId: id }); } }, '✓'),
+          h('button', { type: 'button', class: 'mini danger', title: 'Decline', onclick: (e) => { e.stopPropagation(); frAct('/friends/decline', 'POST', { userId: id }); } }, '✕')), null))) : null,
+      h('div', { class: 'dm-sec' }, h('h6', {}, `Friends — ${fr.friends.length}`),
+        fr.friends.length
+          ? fr.friends.slice().sort((a, b) => (userById(b) || {}).online - (userById(a) || {}).online || userName(a).localeCompare(userName(b))).map((id) =>
+              personRow(id, fr.unread[id] ? h('span', { class: 'dm-unread' }, String(fr.unread[id])) : null, () => openChat(id)))
+          : h('div', { class: 'note' }, 'No friends yet. Add someone above, or press a name in the member list.')),
+      fr.outgoing.length ? h('div', { class: 'dm-sec' }, h('h6', {}, 'Waiting for an answer'),
+        fr.outgoing.map((id) => personRow(id, h('button', { type: 'button', class: 'mini', onclick: (e) => { e.stopPropagation(); frAct('/friends/decline', 'POST', { userId: id }); } }, 'Cancel'), null))) : null);
+}
+
+async function openChat(id) {
+  D.active = id;
+  if (D.box) D.box.classList.add('has-chat');
+  state.fr.unread[id] = 0; renderDmBadge();
+  try { D.msgs = await api('/dm/' + id); } catch (e) { toast(e.message); D.msgs = []; }
+  if (D.active !== id) return;
+  drawFriends(); drawChat();
+}
+
+function drawChat() {
+  const id = D.active;
+  if (!id || !D.chat) { if (D.chat) D.chat.replaceChildren(h('div', { class: 'dm-empty' }, h('div', { class: 'big' }, '💬'), 'Pick a friend to start chatting')); return; }
+  const u = userById(id);
+  const feed = h('div', { class: 'dm-feed' });
+  D.feed = feed;
+  const input = h('input', { type: 'text', maxlength: 2000, placeholder: 'Message ' + (u ? u.username : ''), autocomplete: 'off' });
+  const form = h('form', { class: 'dm-compose', onsubmit: (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    attempt(async () => {
+      try { const m = await api('/dm/' + id, 'POST', { content: text }); pushDm(m); }
+      catch (err) { input.value = text; throw err; }
+    });
+  } }, input, h('button', { type: 'submit', class: 'btn primary small' }, 'Send'));
+  D.chat.replaceChildren(
+    h('header', { class: 'dm-head' },
+      h('button', { type: 'button', class: 'dm-back', title: 'Back', onclick: () => { D.active = null; D.box.classList.remove('has-chat'); drawFriends(); } }, '‹'),
+      u ? avatar(u, true) : null, h('b', {}, u ? u.username : 'Unknown'), u ? userTag(u) : null,
+      h('button', { type: 'button', class: 'mini danger', style: 'margin-left:auto', onclick: async () => {
+        if (await confirmBox('Remove friend?', `${u ? u.username : 'This person'} will be removed from your friends and you will not be able to message each other.`, 'Remove')) { D.active = null; if (D.box) D.box.classList.remove('has-chat'); await frAct('/friends/' + id, 'DELETE'); drawChat(); }
+      } }, 'Unfriend')),
+    feed, form);
+  drawFeed();
+  input.focus();
+}
+
+function drawFeed() {
+  if (!D.feed) return;
+  if (!D.msgs.length) { D.feed.replaceChildren(h('div', { class: 'dm-empty small' }, 'This is the start of your chat. Say hi!')); return; }
+  D.feed.replaceChildren(...D.msgs.map((m, i) => {
+    const mine = m.from === state.me, prev = D.msgs[i - 1];
+    const first = !prev || prev.from !== m.from || m.ts - prev.ts > 5 * 60 * 1000;
+    return h('div', { class: 'dm-msg' + (mine ? ' mine' : '') + (first ? ' first' : '') },
+      h('div', { class: 'dm-bubble', title: fmtStamp(m.ts) }, m.content),
+      first ? h('span', { class: 'time' }, fmtTime(m.ts)) : null);
+  }));
+  D.feed.scrollTop = D.feed.scrollHeight;
+}
+
+function pushDm(msg) {
+  const other = msg.from === state.me ? msg.to : msg.from;
+  if (D.active === other && dmOpen()) {
+    if (!D.msgs.some((x) => x.id === msg.id)) D.msgs.push(msg);
+    drawFeed();
+    if (msg.from !== state.me) api('/dm/' + other + '/read', 'POST').catch(() => {});
+    return;
+  }
+  if (msg.from !== state.me) {
+    state.fr.unread[other] = (state.fr.unread[other] || 0) + 1;
+    renderDmBadge();
+    if (dmOpen()) drawFriends();
+    toast2(`💬 ${userName(other)}: ${msg.content.slice(0, 60)}`);
+  }
+}
+
+// Buttons shown on a person's profile card.
+function friendButtons(user) {
+  if (user.id === state.me) return null;
+  const st = friendState(user.id), done = () => { hidePopover(); };
+  if (st === 'friend') return h('div', { class: 'pop-sec pop-friend' }, h('button', { class: 'btn primary small', onclick: () => { done(); openFriends(user.id); } }, '💬 Message'), h('span', { class: 'pill' }, '✓ Friends'));
+  if (st === 'incoming') return h('div', { class: 'pop-sec pop-friend' }, h('button', { class: 'btn primary small', onclick: () => { done(); frAct('/friends/accept', 'POST', { userId: user.id }); } }, 'Accept friend request'));
+  if (st === 'outgoing') return h('div', { class: 'pop-sec pop-friend' }, h('span', { class: 'pill' }, 'Friend request sent'));
+  return h('div', { class: 'pop-sec pop-friend' }, h('button', { class: 'btn primary small', onclick: () => { done(); frAct('/friends/request', 'POST', { userId: user.id }); toast2('Friend request sent'); } }, '➕ Add friend'));
 }
 
 /* ------------------------------------------------------ report a problem */
@@ -1544,8 +1748,8 @@ $('ownerBtn').onclick = openOwnerPanel;
 
 async function openOwnerPanel() {
   if (!isOwner()) return;
-  let data, reports = [];
-  try { data = await api('/owner/overview'); reports = await api('/owner/reports'); } catch (e) { return toast(e.message); }
+  let data, reports = [], am = { enabled: true, includeStaff: false, words: [], muted: [] };
+  try { data = await api('/owner/overview'); reports = await api('/owner/reports'); am = await api('/owner/automod'); takeEco(await api('/economy')); } catch (e) { return toast(e.message); }
   const reopen = () => openOwnerPanel();
   const others = state.users.filter((u) => u.id !== state.me);
   const admins = state.users.filter((u) => u.roleId === 'admin');
@@ -1576,6 +1780,54 @@ async function openOwnerPanel() {
     let obj; try { obj = JSON.parse(await f.text()); } catch { return toast('That file is not a Warms backup'); }
     if (await confirmBox('Restore this backup?', 'This REPLACES everything on the site (accounts, chats, coins) with the backup, and signs everyone else out.', 'Restore')) attempt(async () => { const r = await api('/owner/restore', 'POST', obj); closeOverlay(); await refresh(); await loadMessages(); toast2('Restored ' + r.users + ' accounts'); });
   });
+  /* events */
+  const activeBox = h('div', { class: 'ev-active' });
+  const endBtn = (e) => h('button', { class: 'btn small', onclick: () => attempt(async () => { await api('/owner/events/' + e.id, 'DELETE'); takeEco(await api('/economy')); drawActive(); toast2('Event ended'); }) }, 'End now');
+  const drawActive = () => {
+    const evs = liveEvents();
+    const rows = evs.map((e) => h('div', { class: 'own-row' }, h('span', { class: 'own-name' }, `${e.icon} ${e.name} ${evDetail(e)} · ${fmtLeft(evLeft(e))} left`), endBtn(e)));
+    activeBox.replaceChildren(...(rows.length ? rows : [h('div', { class: 'note' }, 'No events running.')]));
+  };
+  drawActive();
+  const sel = (opts, def) => h('select', {}, opts.map(([v, l]) => h('option', { value: v, selected: v === def }, l)));
+  const start = (payload) => attempt(async () => { await api('/owner/events', 'POST', payload); takeEco(await api('/economy')); drawActive(); toast2('Event started — everyone was told'); });
+  const mins = () => sel([[15, '15 min'], [30, '30 min'], [60, '1 hour'], [180, '3 hours'], [1440, '24 hours']], 30);
+  const luckMult = sel([[2, 'x2'], [3, 'x3'], [5, 'x5'], [10, 'x10']], 3), luckMin = mins();
+  const dblMult = sel([[2, 'x2'], [3, 'x3']], 2), dblMin = mins();
+  const salePct = sel([[25, '25% off'], [50, '50% off'], [75, '75% off']], 50), saleMin = mins();
+  const rainAmt = h('input', { type: 'number', value: 100, min: 1, max: 10000, 'aria-label': 'Coins per person' });
+  const evRow = (icon, title, desc, controls, go, label = 'Start') => h('div', { class: 'ev-row' }, h('div', { class: 'ev-info' }, h('b', {}, `${icon} ${title}`), h('small', {}, desc)),
+    h('div', { class: 'ev-ctl' }, controls, h('button', { class: 'btn primary small', onclick: go }, label)));
+  const eventsSection = h('section', {}, h('h4', {}, '🎉 Events for everyone'),
+    activeBox,
+    evRow('🍀', 'Lucky Hour', 'Multiplies the chance of rare tags when opening packs', [luckMult, luckMin], () => start({ type: 'luck', mult: Number(luckMult.value), minutes: Number(luckMin.value) })),
+    evRow('🎡', 'Double Coins', 'The Daily Wheel pays more', [dblMult, dblMin], () => start({ type: 'double', mult: Number(dblMult.value), minutes: Number(dblMin.value) })),
+    evRow('🏷️', 'Pack Sale', 'Tag packs cost less', [salePct, saleMin], () => start({ type: 'sale', percent: Number(salePct.value), minutes: Number(saleMin.value) })),
+    evRow('🎁', 'Coin Rain', 'Gives every member coins right now', [rainAmt], () => start({ type: 'gift', amount: Number(rainAmt.value) }), 'Give'),
+    evRow('🔄', 'Free Spin For All', 'Everyone can spin the wheel again now', [], () => start({ type: 'freespin' })));
+
+  /* AutoMod */
+  const amOn = h('input', { type: 'checkbox', checked: am.enabled });
+  const amStaff = h('input', { type: 'checkbox', checked: am.includeStaff });
+  const amWords = h('input', { type: 'text', value: (am.words || []).join(', '), placeholder: 'extra banned words, separated by commas' });
+  const amSave = (extra = {}) => attempt(async () => {
+    am = await api('/owner/automod', 'PUT', Object.assign({ enabled: amOn.checked, includeStaff: amStaff.checked, words: amWords.value.split(',').map((x) => x.trim()).filter(Boolean) }, extra));
+    amWords.value = am.words.join(', '); toast2('AutoMod saved');
+  });
+  const mutedBox = h('div', {});
+  const unmuteBtn = (m) => h('button', { class: 'btn small', onclick: () => attempt(async () => { await api(`/users/${m.id}/mute`, 'PUT', { minutes: 0 }); am = await api('/owner/automod'); drawMuted(); await refresh(); toast2(m.username + ' was unmuted'); }) }, 'Unmute');
+  const drawMuted = () => {
+    const rows = am.muted.map((m) => h('div', { class: 'own-row' }, h('span', { class: 'own-name' }, `${m.username} · muted ${m.minutes}m · strike ${m.offenses || '–'}`), unmuteBtn(m)));
+    mutedBox.replaceChildren(...(rows.length ? rows : [h('div', { class: 'note' }, 'Nobody is muted right now.')]));
+  };
+  drawMuted();
+  const automodSection = h('section', {}, h('h4', {}, '🤖 AutoMod (chat filter)'),
+    h('label', { class: 'own-check' }, amOn, ' AutoMod is on'),
+    h('label', { class: 'own-check' }, amStaff, ' Also filter Owner and Admins (for testing)'),
+    h('div', { class: 'own-add' }, amWords, h('button', { class: 'btn small', onclick: () => amSave() }, 'Save')),
+    h('div', { class: 'note' }, 'It blocks cuss words and spam (flooding, repeats, link spam). First offence = 10 minute mute, then it doubles: 20, 40, 80… Strikes fade after a week. Admins and the Owner can unmute from the Staff panel, or here.'),
+    mutedBox);
+
   const xferSel = h('select', {}, h('option', { value: '' }, 'Choose new Owner…'), others.map((u) => h('option', { value: u.id }, u.username)));
   const xferPass = h('input', { type: 'password', placeholder: 'Your password', autocomplete: 'current-password' });
   const wipeIn = h('input', { type: 'text', placeholder: 'Type the server name to confirm' });
@@ -1605,6 +1857,8 @@ async function openOwnerPanel() {
           h('button', { class: 'btn small', onclick: () => attempt(async () => { await api(`/owner/reports/${r.id}/resolve`, 'POST'); reopen(); }) }, r.resolved ? 'Reopen' : 'Mark done'),
           h('button', { class: 'btn small ghost', onclick: () => attempt(async () => { await api(`/owner/reports/${r.id}`, 'DELETE'); reopen(); }) }, 'Delete'))))
         : h('div', { class: 'note' }, 'No reports yet.')),
+    eventsSection,
+    automodSection,
     h('section', {}, h('h4', {}, '🪙 Give coins'),
       h('div', { class: 'own-add' }, coinSel, coinAmt),
       h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => {

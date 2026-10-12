@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
+const automod = require('./automod');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -48,6 +49,9 @@ try {
 const ANN = 'announcements';
 function migrate() {
 db.settings = Object.assign({ registrationOpen: true, welcomeText: 'Welcome {name}! \uD83D\uDC4B' }, db.settings || {});
+db.settings.automod = Object.assign({ enabled: true, includeStaff: false, words: [] }, db.settings.automod || {});
+db.events = Array.isArray(db.events) ? db.events : [];
+db.dms = db.dms && typeof db.dms === 'object' ? db.dms : {};
 // Older data had Admin at the top. Add the Owner role above it and make the founding Admin the Owner.
 if (!db.roles.some((r) => r.id === 'owner')) {
   for (const r of db.roles) if (r.position < 100) r.position += 1;
@@ -385,32 +389,81 @@ const WHEEL = [ // value + weight per segment (weights add to 100)
   { coins: 25, w: 15 }, { coins: 50, w: 15 }, { coins: 25, w: 15 }, { coins: 75, w: 10 }, { coins: 50, w: 15 },
   { coins: 100, w: 12 }, { coins: 150, w: 5 }, { coins: 75, w: 10 }, { coins: 250, w: 2.5 }, { coins: 500, w: 0.5 },
 ];
-const RARITIES = [ // chance of each rarity per roll, and coins back for a duplicate
-  { id: 'common', label: 'Common', chance: 60, refund: 20 },
+const RARITIES = [ // chance of each rarity per roll (adds to 100), and coins back for a duplicate
+  { id: 'common', label: 'Common', chance: 59.9, refund: 20 },
   { id: 'uncommon', label: 'Uncommon', chance: 25, refund: 35 },
   { id: 'rare', label: 'Rare', chance: 10, refund: 60 },
   { id: 'epic', label: 'Epic', chance: 4, refund: 120 },
   { id: 'legendary', label: 'Legendary', chance: 1, refund: 250 },
+  { id: 'croma', label: 'Croma', chance: 0.1, refund: 1000 },
 ];
-const TAGS = [ // Halloween set (icon shows beside the name)
-  { id: 'ghost', name: 'Little Ghost', icon: '👻', rarity: 'common' }, { id: 'candy-corn', name: 'Candy Corn', icon: '🍬', rarity: 'common' },
-  { id: 'cobweb', name: 'Cobweb', icon: '🕸️', rarity: 'common' }, { id: 'pumpkin-spice', name: 'Pumpkin Spice', icon: '🥧', rarity: 'common' },
-  { id: 'black-cat', name: 'Black Cat', icon: '🐈‍⬛', rarity: 'uncommon' }, { id: 'bat-wing', name: 'Bat Wing', icon: '🦇', rarity: 'uncommon' },
-  { id: 'trick-or-treat', name: 'Trick or Treat', icon: '🍭', rarity: 'uncommon' }, { id: 'witch-brew', name: "Witch's Brew", icon: '🧪', rarity: 'rare' },
-  { id: 'haunted', name: 'Haunted', icon: '🏚️', rarity: 'rare' }, { id: 'skeleton-crew', name: 'Skeleton Crew', icon: '💀', rarity: 'rare' },
-  { id: 'jack-o-lantern', name: "Jack-o'-Lantern", icon: '🎃', rarity: 'epic' }, { id: 'vampire-kiss', name: "Vampire's Kiss", icon: '🧛', rarity: 'epic' },
-  { id: 'headless-horseman', name: 'Headless Horseman', icon: '🐴', rarity: 'legendary' }, { id: 'midnight-reaper', name: 'Midnight Reaper', icon: '☠️', rarity: 'legendary' },
+// Tag packs. Each pack lists its tags as [id, name, icon] for every rarity, in this order:
+// 4 common, 3 uncommon, 3 rare, 2 epic, 2 legendary, 1 croma.
+const PACKS = [
+  { id: 'halloween', name: 'Halloween', icon: '🎃', blurb: 'Ghosts, bats and pumpkins', tags: [
+    ['ghost', 'Little Ghost', '👻'], ['candy-corn', 'Candy Corn', '🍬'], ['cobweb', 'Cobweb', '🕸️'], ['pumpkin-spice', 'Pumpkin Spice', '🥧'],
+    ['black-cat', 'Black Cat', '🐈‍⬛'], ['bat-wing', 'Bat Wing', '🦇'], ['trick-or-treat', 'Trick or Treat', '🍭'],
+    ['witch-brew', "Witch's Brew", '🧪'], ['haunted', 'Haunted', '🏚️'], ['skeleton-crew', 'Skeleton Crew', '💀'],
+    ['jack-o-lantern', "Jack-o'-Lantern", '🎃'], ['vampire-kiss', "Vampire's Kiss", '🧛'],
+    ['headless-horseman', 'Headless Horseman', '🐴'], ['midnight-reaper', 'Midnight Reaper', '☠️'],
+    ['prismatic-pumpkin', 'Prismatic Pumpkin', '🌈'] ] },
+  { id: 'dogs', name: 'Dog Pack', icon: '🐶', blurb: 'Good boys and girls', tags: [
+    ['puppy', 'Puppy', '🐶'], ['tennis-ball', 'Tennis Ball', '🎾'], ['bone', 'Bone', '🦴'], ['zoomies', 'Zoomies', '💨'],
+    ['good-boy', 'Good Boy', '🐕'], ['poodle', 'Fancy Poodle', '🐩'], ['mail-chaser', 'Mail Chaser', '📬'],
+    ['husky-howl', 'Husky Howl', '🐺'], ['guide-dog', 'Guide Dog', '🦮'], ['sniffer', 'Super Sniffer', '👃'],
+    ['k9-unit', 'K9 Unit', '🚓'], ['rescue-hero', 'Rescue Hero', '🚑'],
+    ['cerberus', 'Cerberus', '🔥'], ['hot-dog-king', 'Hot Dog King', '🌭'],
+    ['rainbow-doge', 'Rainbow Doge', '🌈'] ] },
+  { id: 'space', name: 'Space Pack', icon: '🚀', blurb: 'Stars, planets and aliens', tags: [
+    ['stardust', 'Stardust', '✨'], ['moon-dust', 'Moon Dust', '🌙'], ['comet-tail', 'Comet Tail', '☄️'], ['space-cadet', 'Space Cadet', '🧑‍🚀'],
+    ['satellite', 'Satellite', '🛰️'], ['alien-pal', 'Alien Pal', '👽'], ['rocket-fuel', 'Rocket Fuel', '🚀'],
+    ['ringed-planet', 'Ringed Planet', '🪐'], ['black-hole', 'Black Hole', '🕳️'], ['telescope-eye', 'Telescope Eye', '🔭'],
+    ['supernova', 'Supernova', '💥'], ['mars-colonist', 'Mars Colonist', '🔴'],
+    ['galaxy-brain', 'Galaxy Brain', '🌌'], ['event-horizon', 'Event Horizon', '🌀'],
+    ['nebula-walker', 'Nebula Walker', '🌈'] ] },
+  { id: 'ocean', name: 'Ocean Pack', icon: '🌊', blurb: 'Deep sea treasures', tags: [
+    ['seashell', 'Seashell', '🐚'], ['tide-pool', 'Tide Pool', '🌊'], ['crab-walk', 'Crab Walk', '🦀'], ['sea-breeze', 'Sea Breeze', '🍃'],
+    ['dolphin-pal', 'Dolphin Pal', '🐬'], ['old-sailor', 'Old Sailor', '⚓'], ['reef-fish', 'Reef Fish', '🐠'],
+    ['pearl-diver', 'Pearl Diver', '🦪'], ['octopus-ink', 'Octopus Ink', '🐙'], ['shark-fin', 'Shark Fin', '🦈'],
+    ['kraken', 'Kraken', '🦑'], ['mermaid-song', 'Mermaid Song', '🧜'],
+    ['leviathan', 'Leviathan', '🐋'], ['atlantis', 'Atlantis', '🔱'],
+    ['aurora-reef', 'Aurora Reef', '🌈'] ] },
 ];
+const SLOTS = ['common', 'common', 'common', 'common', 'uncommon', 'uncommon', 'uncommon', 'rare', 'rare', 'rare', 'epic', 'epic', 'legendary', 'legendary', 'croma'];
+const TAGS = PACKS.flatMap((p) => p.tags.map(([id, name, icon], i) => ({ id, name, icon, rarity: SLOTS[i], pack: p.id })));
 // Old tag ids from the first version are renamed so nobody loses what they already own.
 const OLD_TAG_IDS = { newbie: 'ghost', chill: 'candy-corn', lurker: 'cobweb', snacky: 'pumpkin-spice', 'night-owl': 'black-cat', gamer: 'bat-wing', 'meme-lord': 'trick-or-treat', vibes: 'witch-brew', 'big-brain': 'haunted', speedrunner: 'skeleton-crew', 'cozy-fire': 'jack-o-lantern', sunburst: 'vampire-kiss', 'warm-legend': 'headless-horseman', 'golden-goat': 'midnight-reaper' };
 const tagById = (id) => TAGS.find((t) => t.id === id);
 const rarityOf = (id) => RARITIES.find((r) => r.id === id);
+
 function pickWeighted(list, weight) {
   const total = list.reduce((n, x) => n + weight(x), 0);
-  let r = crypto.randomInt(0, 1e6) / 1e6 * total;
+  let r = crypto.randomInt(0, 1e9) / 1e9 * total;
   for (const x of list) { r -= weight(x); if (r < 0) return x; }
   return list[list.length - 1];
 }
+
+/* Events the Owner starts for everyone. Timed ones live in db.events; instant ones just happen. */
+const EVENT_TYPES = {
+  luck: { icon: '🍀', name: 'Lucky Hour', timed: true },
+  double: { icon: '🎡', name: 'Double Coins', timed: true },
+  sale: { icon: '🏷️', name: 'Pack Sale', timed: true },
+  gift: { icon: '🎁', name: 'Coin Rain', timed: false },
+  freespin: { icon: '🔄', name: 'Free Spin For All', timed: false },
+};
+function activeEvents() {
+  const now = Date.now();
+  if (!Array.isArray(db.events)) db.events = [];
+  if (db.events.some((e) => e.until <= now)) db.events = db.events.filter((e) => e.until > now);
+  return db.events;
+}
+const eventMult = (type) => activeEvents().filter((e) => e.type === type).reduce((m, e) => Math.max(m, e.mult || 1), 1);
+const currentCost = () => {
+  const off = activeEvents().filter((e) => e.type === 'sale').reduce((m, e) => Math.max(m, e.percent || 0), 0);
+  return Math.max(1, Math.round(MACHINE_COST * (1 - off / 100)));
+};
+const luckyChance = (r, luck) => (r.id === 'common' ? r.chance : r.chance * luck);
+
 function econ(u) {
   if (Array.isArray(u.tags) && u.tags.some((t) => OLD_TAG_IDS[t])) u.tags = [...new Set(u.tags.map((t) => OLD_TAG_IDS[t] || t))];
   if (OLD_TAG_IDS[u.tag]) u.tag = OLD_TAG_IDS[u.tag];
@@ -426,12 +479,15 @@ function economyFor(u) {
     owned: u.tags,
     equipped: u.tag || null,
     now: Date.now(),
+    cost: currentCost(),
+    baseCost: MACHINE_COST,
+    events: activeEvents().map((e) => ({ id: e.id, type: e.type, icon: EVENT_TYPES[e.type].icon, name: EVENT_TYPES[e.type].name, mult: e.mult || 0, percent: e.percent || 0, until: e.until })),
   };
 }
 const economyInfo = () => ({
-  cost: MACHINE_COST,
   wheel: WHEEL.map((s) => s.coins),
   rarities: RARITIES,
+  packs: PACKS.map((p) => ({ id: p.id, name: p.name, icon: p.icon, blurb: p.blurb })),
   tags: TAGS,
 });
 
@@ -441,19 +497,24 @@ app.post('/api/wheel/spin', auth, (req, res) => {
   const u = econ(req.user);
   if (u.lastSpin && Date.now() - u.lastSpin < SPIN_COOLDOWN) return res.status(429).json({ error: 'Come back later for your next spin', ...economyFor(u) });
   const seg = pickWeighted(WHEEL.map((s, i) => ({ ...s, i })), (s) => s.w);
-  u.coins += seg.coins;
+  const won = seg.coins * eventMult('double');
+  u.coins += won;
   u.lastSpin = Date.now();
   save();
-  res.json({ index: seg.i, won: seg.coins, ...economyFor(u) });
+  res.json({ index: seg.i, base: seg.coins, won, ...economyFor(u) });
 });
 
 app.post('/api/machine/roll', auth, (req, res) => {
   const u = econ(req.user);
   if (rateLimited('roll:' + u.id, 20, 60000)) return res.status(429).json({ error: 'Slow down a little' });
-  if (u.coins < MACHINE_COST) return res.status(400).json({ error: `You need ${MACHINE_COST} coins to roll` });
-  u.coins -= MACHINE_COST;
-  const rarity = pickWeighted(RARITIES, (r) => r.chance);
-  const pool = TAGS.filter((t) => t.rarity === rarity.id);
+  const pack = PACKS.find((p) => p.id === String(req.body.pack || 'halloween'));
+  if (!pack) return res.status(400).json({ error: 'Pick a pack first' });
+  const cost = currentCost();
+  if (u.coins < cost) return res.status(400).json({ error: `You need ${cost} coins to open a pack` });
+  u.coins -= cost;
+  const luck = eventMult('luck');
+  const rarity = pickWeighted(RARITIES, (r) => luckyChance(r, luck));
+  const pool = TAGS.filter((t) => t.pack === pack.id && t.rarity === rarity.id);
   const tag = pool[crypto.randomInt(0, pool.length)];
   const duplicate = u.tags.includes(tag.id);
   if (duplicate) u.coins += rarity.refund; else u.tags.push(tag.id);
@@ -469,6 +530,149 @@ app.post('/api/tags/equip', auth, (req, res) => {
   save();
   broadcast({ t: 'members' });
   res.json(economyFor(u));
+});
+
+/* ---------------------------------------------------------------- AutoMod */
+
+const isStaffUser = (u) => isAdmin(u);
+function automodMuted(u) { return u.mutedUntil && u.mutedUntil > Date.now(); }
+
+// Returns true (after answering the request) when the text broke a rule. The message is NOT posted.
+function automodGate(req, res, text, where) {
+  const cfg = db.settings.automod;
+  const u = req.user;
+  if (!cfg.enabled || (isStaffUser(u) && !cfg.includeStaff)) return false;
+  const hit = automod.check(u.id, text, cfg.words);
+  if (!hit) return false;
+  // offences fade after a week of good behaviour
+  if (u.lastOffense && Date.now() - u.lastOffense > 7 * 24 * 3600 * 1000) u.offenses = 0;
+  u.offenses = (u.offenses || 0) + 1;
+  u.lastOffense = Date.now();
+  const minutes = automod.muteMinutesFor(u.offenses);
+  u.mutedUntil = Date.now() + minutes * 60000;
+  const label = minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60} hour${minutes === 60 ? '' : 's'}` : `${minutes} minutes`;
+  audit({ username: 'AutoMod' }, `muted ${u.username} for ${label} (${hit.detail}, offence #${u.offenses})`);
+  if (where && db.messages[where]) {
+    const sys = { id: uid(8), channelId: where, userId: u.id, content: `🤖 AutoMod muted ${u.username} for ${label} (${hit.detail}).`, image: null, ts: Date.now(), system: true, bot: true };
+    db.messages[where].push(sys);
+    broadcast({ t: 'message', msg: sys });
+  }
+  save();
+  broadcast({ t: 'members' });
+  res.status(403).json({ error: `AutoMod blocked that message (${hit.detail}). You are muted for ${label}.`, automod: true, minutes });
+  return true;
+}
+
+/* ------------------------------------------------------- friends and DMs */
+
+function sendTo(userId, payload) {
+  const data = JSON.stringify(payload);
+  for (const [ws, id] of sockets) if (id === userId && ws.readyState === 1) ws.send(data);
+}
+const social = (u) => {
+  for (const k of ['friends', 'reqIn', 'reqOut']) if (!Array.isArray(u[k])) u[k] = [];
+  if (!u.dmRead || typeof u.dmRead !== 'object') u.dmRead = {};
+  for (const k of ['friends', 'reqIn', 'reqOut']) u[k] = u[k].filter((id) => db.users[id]);
+  return u;
+};
+const dmKey = (a, b) => [a, b].sort().join(':');
+const dmList = (a, b) => (db.dms[dmKey(a, b)] ||= []);
+const areFriends = (a, b) => social(a).friends.includes(b.id);
+const pull = (arr, id) => { const i = arr.indexOf(id); if (i >= 0) arr.splice(i, 1); };
+
+function friendsView(u) {
+  social(u);
+  const unread = {};
+  for (const id of u.friends) {
+    const since = u.dmRead[id] || 0;
+    const n = dmList(u.id, id).filter((m) => m.from === id && m.ts > since).length;
+    if (n) unread[id] = n;
+  }
+  return { friends: u.friends, incoming: u.reqIn, outgoing: u.reqOut, unread };
+}
+
+app.get('/api/friends', auth, (req, res) => res.json(friendsView(req.user)));
+
+app.post('/api/friends/request', auth, (req, res) => {
+  const me = social(req.user), other = db.users[String(req.body.userId || '')];
+  if (!other) return res.status(404).json({ error: 'No such person' });
+  if (other.id === me.id) return res.status(400).json({ error: 'You cannot friend yourself' });
+  social(other);
+  if (me.friends.includes(other.id)) return res.status(400).json({ error: `You and ${other.username} are already friends` });
+  if (rateLimited('freq:' + me.id, 30, 60000)) return res.status(429).json({ error: 'Slow down a little' });
+  let accepted = false;
+  if (me.reqIn.includes(other.id)) { // they already asked you: that makes you friends
+    pull(me.reqIn, other.id); pull(other.reqOut, me.id);
+    me.friends.push(other.id); other.friends.push(me.id);
+    accepted = true;
+  } else if (!me.reqOut.includes(other.id)) {
+    me.reqOut.push(other.id); other.reqIn.push(me.id);
+  }
+  save();
+  sendTo(other.id, { t: 'friends', from: me.username, kind: accepted ? 'accepted' : 'request' });
+  res.json({ ok: true, accepted, ...friendsView(me) });
+});
+
+app.post('/api/friends/accept', auth, (req, res) => {
+  const me = social(req.user), other = db.users[String(req.body.userId || '')];
+  if (!other || !me.reqIn.includes(other.id)) return res.status(404).json({ error: 'That request is gone' });
+  social(other);
+  pull(me.reqIn, other.id); pull(other.reqOut, me.id);
+  me.friends.push(other.id); other.friends.push(me.id);
+  save();
+  sendTo(other.id, { t: 'friends', from: me.username, kind: 'accepted' });
+  res.json({ ok: true, ...friendsView(me) });
+});
+
+app.post('/api/friends/decline', auth, (req, res) => { // decline an incoming request, or cancel one you sent
+  const me = social(req.user), other = db.users[String(req.body.userId || '')];
+  if (other) { social(other); pull(me.reqIn, other.id); pull(me.reqOut, other.id); pull(other.reqIn, me.id); pull(other.reqOut, me.id); sendTo(other.id, { t: 'friends', kind: 'update' }); }
+  save();
+  res.json({ ok: true, ...friendsView(me) });
+});
+
+app.delete('/api/friends/:id', auth, (req, res) => {
+  const me = social(req.user), other = db.users[req.params.id];
+  pull(me.friends, req.params.id);
+  if (other) { social(other); pull(other.friends, me.id); sendTo(other.id, { t: 'friends', kind: 'update' }); }
+  save();
+  res.json({ ok: true, ...friendsView(me) });
+});
+
+app.get('/api/dm/:id', auth, (req, res) => {
+  const me = social(req.user), other = db.users[req.params.id];
+  if (!other || !areFriends(me, other)) return res.status(403).json({ error: 'You can only message friends' });
+  const list = dmList(me.id, other.id);
+  me.dmRead[other.id] = Date.now();
+  save();
+  res.json(list.slice(-200));
+});
+
+app.post('/api/dm/:id/read', auth, (req, res) => {
+  const me = social(req.user);
+  me.dmRead[req.params.id] = Date.now();
+  save();
+  res.json({ ok: true });
+});
+
+app.post('/api/dm/:id', auth, (req, res) => {
+  const me = social(req.user), other = db.users[req.params.id];
+  if (!other || !areFriends(me, other)) return res.status(403).json({ error: 'You can only message friends' });
+  const left = muteLeft(me);
+  if (left) return res.status(403).json({ error: `You are muted for another ${left} min` });
+  if (rateLimited('dm:' + me.id, 40, 60000)) return res.status(429).json({ error: 'Slow down a little' });
+  const content = String(req.body.content || '').slice(0, 2000);
+  if (!content.trim()) return res.status(400).json({ error: 'Empty message' });
+  if (automodGate(req, res, content, null)) return;
+  const msg = { id: uid(8), from: me.id, to: other.id, content, ts: Date.now() };
+  const list = dmList(me.id, other.id);
+  list.push(msg);
+  if (list.length > 2000) list.splice(0, list.length - 2000);
+  me.dmRead[other.id] = Date.now();
+  save();
+  sendTo(me.id, { t: 'dm', msg });
+  if (other.id !== me.id) sendTo(other.id, { t: 'dm', msg });
+  res.json(msg);
 });
 
 /* -------------------------------------------------------------- messages */
@@ -500,6 +704,7 @@ app.post('/api/channels/:id/messages', auth, (req, res) => {
   const left = muteLeft(req.user);
   if (left) return res.status(403).json({ error: `You are muted for another ${left} min` });
   const content = String(req.body.content || '').slice(0, 2000);
+  if (content && automodGate(req, res, content, chan && !chan.locked ? req.params.id : null)) return;
   const image = typeof req.body.image === 'string' && /^\/uploads\/[a-f0-9]+\.(png|jpg|gif|webp)$/.test(req.body.image) ? req.body.image : null;
   if (!content.trim() && !image) return res.status(400).json({ error: 'Empty message' });
   const replyTo = typeof req.body.replyTo === 'string' && list.some((m) => m.id === req.body.replyTo) ? req.body.replyTo : null;
@@ -777,6 +982,7 @@ app.patch('/api/messages/:id', auth, (req, res) => {
   if (muteLeft(req.user)) return res.status(403).json({ error: `You are muted for another ${muteLeft(req.user)} min` });
   const content = String(req.body.content || '').slice(0, 2000);
   if (!content.trim()) return res.status(400).json({ error: 'A message cannot be empty' });
+  if (automodGate(req, res, content, f.channelId)) return;
   f.msg.content = content;
   f.msg.edited = Date.now();
   save();
@@ -974,6 +1180,73 @@ app.post('/api/owner/restore', auth, ownerOnly, (req, res) => {
   res.json({ ok: true, users: Object.keys(db.users).length });
 });
 
+/* Owner events: Lucky Hour, Double Coins, Pack Sale (timed) and Coin Rain, Free Spin For All (instant). */
+function tellEveryone(by, text) {
+  broadcast({ t: 'announce', text, by: by.username });
+  const ann = db.channels.find((c) => c.global);
+  if (ann) {
+    const msg = { id: uid(8), channelId: ann.id, userId: by.id, content: text, image: null, ts: Date.now(), announce: true };
+    db.messages[ann.id].push(msg);
+    broadcast({ t: 'message', msg });
+  }
+}
+const fmtMin = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ' ' + (m % 60) + 'm' : ''}` : `${m} min`);
+
+app.post('/api/owner/events', auth, ownerOnly, (req, res) => {
+  const type = String(req.body.type || '');
+  const def = EVENT_TYPES[type];
+  if (!def) return res.status(400).json({ error: 'Unknown event' });
+  const num = (v, lo, hi, d) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+  let text;
+  if (def.timed) {
+    const minutes = num(req.body.minutes, 1, 1440, 30);
+    const ev = { id: uid(6), type, until: Date.now() + minutes * 60000, by: req.user.username };
+    if (type === 'luck') { ev.mult = num(req.body.mult, 2, 10, 3); text = `${def.icon} ${def.name}! Rare tag chances are x${ev.mult} for ${fmtMin(minutes)}. Open packs in the Shop now!`; }
+    if (type === 'double') { ev.mult = num(req.body.mult, 2, 5, 2); text = `${def.icon} ${def.name}! The Daily Wheel pays x${ev.mult} for ${fmtMin(minutes)}.`; }
+    if (type === 'sale') { ev.percent = num(req.body.percent, 10, 90, 50); text = `${def.icon} ${def.name}! Tag packs are ${ev.percent}% off for ${fmtMin(minutes)}.`; }
+    activeEvents().push(ev);
+  } else if (type === 'gift') {
+    const amount = num(req.body.amount, 1, 10000, 100);
+    for (const u of Object.values(db.users)) { econ(u); u.coins = Math.min(1e9, u.coins + amount); }
+    text = `${def.icon} ${def.name}! Everyone just received ${amount} coins.`;
+  } else if (type === 'freespin') {
+    for (const u of Object.values(db.users)) u.lastSpin = 0;
+    text = `${def.icon} ${def.name}! Everyone can spin the Daily Wheel again right now.`;
+  }
+  audit(req.user, 'started event: ' + text);
+  tellEveryone(req.user, text);
+  save();
+  broadcast({ t: 'members' });
+  res.json({ ok: true, events: economyFor(req.user).events });
+});
+
+app.delete('/api/owner/events/:id', auth, ownerOnly, (req, res) => {
+  const before = activeEvents().length;
+  db.events = activeEvents().filter((e) => e.id !== req.params.id);
+  if (db.events.length === before) return res.status(404).json({ error: 'That event already ended' });
+  audit(req.user, 'ended an event early');
+  save();
+  broadcast({ t: 'members' });
+  res.json({ ok: true, events: economyFor(req.user).events });
+});
+
+/* Owner: AutoMod settings and the list of people it has muted. */
+const automodView = () => ({
+  ...db.settings.automod,
+  muted: Object.values(db.users).filter(automodMuted).map((u) => ({ id: u.id, username: u.username, minutes: muteLeft(u), offenses: u.offenses || 0 })),
+  striked: Object.values(db.users).filter((u) => u.offenses && !automodMuted(u)).map((u) => ({ id: u.id, username: u.username, offenses: u.offenses })),
+});
+app.get('/api/owner/automod', auth, ownerOnly, (req, res) => res.json(automodView()));
+app.put('/api/owner/automod', auth, ownerOnly, (req, res) => {
+  const c = db.settings.automod;
+  if (typeof req.body.enabled === 'boolean') c.enabled = req.body.enabled;
+  if (typeof req.body.includeStaff === 'boolean') c.includeStaff = req.body.includeStaff;
+  if (Array.isArray(req.body.words)) c.words = [...new Set(req.body.words.map((w) => String(w).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 30)).filter(Boolean))].slice(0, 200);
+  audit(req.user, `AutoMod ${c.enabled ? 'on' : 'off'}${c.includeStaff ? ', also filtering staff' : ''}`);
+  save();
+  res.json(automodView());
+});
+
 app.post('/api/owner/transfer', auth, ownerOnly, async (req, res) => {
   try {
     if (rateLimited('transfer:' + req.user.id, 5)) return res.status(429).json({ error: 'Too many attempts, wait a minute' });
@@ -1016,10 +1289,11 @@ app.put('/api/users/:id/mute', auth, need('manage_users'), (req, res) => {
   const t = db.users[req.params.id];
   if (!t) return res.status(404).json({ error: 'No such user' });
   if (t.id === req.user.id) return res.status(400).json({ error: 'You cannot mute yourself' });
-  if (!outranks(req.user, t)) return res.status(403).json({ error: 'You can only mute people ranked below you' });
   const minutes = Math.floor(Number(req.body.minutes));
+  if (!outranks(req.user, t) && !(minutes === 0 && isAdmin(req.user))) return res.status(403).json({ error: 'You can only mute people ranked below you' });
   if (!Number.isFinite(minutes) || minutes < 0 || minutes > 10080) return res.status(400).json({ error: 'Choose between 0 and 10080 minutes' });
   t.mutedUntil = minutes ? Date.now() + minutes * 60000 : 0;
+  if (!minutes) t.offenses = 0; // an unmute also wipes the AutoMod strikes
   audit(req.user, minutes ? `muted ${t.username} for ${minutes} min` : `unmuted ${t.username}`);
   save();
   broadcast({ t: 'members' });
@@ -1081,6 +1355,7 @@ const HELP = [
   '  purge <channel> [count]    delete the last [count] messages, or all of them',
   '  rename <new server name>   rename the server',
   '  givecoins <user> <amount>  give (or take, with a minus) play coins',
+  '  unmute <user>              lift a mute (also clears AutoMod strikes)',
 ];
 
 app.post('/api/admin/command', auth, (req, res) => {
@@ -1089,7 +1364,7 @@ app.post('/api/admin/command', auth, (req, res) => {
   if (!raw) return res.json({ output: [] });
   const [cmd, ...args] = tokenize(raw);
   const rest = raw.slice(cmd.length).trim();
-  const AUDITED = ['announce', 'role', 'kick', 'purge', 'rename', 'givecoins'];
+  const AUDITED = ['announce', 'role', 'kick', 'purge', 'rename', 'givecoins', 'unmute'];
   const done = (output, ok = true) => {
     if (ok && AUDITED.includes(cmd.toLowerCase())) audit(req.user, 'console: ' + raw.slice(0, 120));
     res.json({ output: [].concat(output), ok });
@@ -1196,6 +1471,15 @@ app.post('/api/admin/command', auth, (req, res) => {
       save();
       broadcast({ t: 'members' });
       return done(`${target.username} now has ${target.coins} coins.`);
+    }
+
+    case 'unmute': {
+      const target = findUser(args.join(' ')) || findUser(args[0] || '');
+      if (!target) return done('Usage: unmute <user>', false);
+      target.mutedUntil = 0; target.offenses = 0;
+      save();
+      broadcast({ t: 'members' });
+      return done(`${target.username} is unmuted.`);
     }
 
     default:
