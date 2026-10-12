@@ -821,6 +821,7 @@ function showPopover(user, anchor) {
             }, options.map((r) => h('option', { value: r.id, selected: r.id === user.roleId }, r.name)),
               options.some((r) => r.id === user.roleId) ? null : h('option', { value: user.roleId, selected: true, disabled: true }, role.name))
           : h('span', { class: 'pill', style: `border-color:${role.color}` }, h('span', { class: 'dot', style: `background:${role.color}` }), role.name)),
+      staffTagTools(user),
       can('manage_users') && user.id !== state.me && user.roleId !== 'owner' && outranksUser(me(), user)
         ? h('button', {
             class: 'btn danger small',
@@ -1129,6 +1130,29 @@ function openCommandCenter() {
     if (e.key === 'ArrowUp' && adminHistory.length) { e.preventDefault(); adminHistoryAt = Math.max(0, adminHistoryAt - 1); input.value = adminHistory[adminHistoryAt]; }
     if (e.key === 'ArrowDown' && adminHistory.length) { e.preventDefault(); adminHistoryAt = Math.min(adminHistory.length, adminHistoryAt + 1); input.value = adminHistory[adminHistoryAt] || ''; }
   });
+  // give / take tags and coins
+  const ccWho = h('select', { 'aria-label': 'Member' }, h('option', { value: '' }, 'Choose a member…'), state.users.map((u) => h('option', { value: u.id }, u.username + (u.id === state.me ? ' (you)' : ''))));
+  const ccTag = h('select', { 'aria-label': 'Tag or pack' }, h('option', { value: '' }, 'Choose a tag or a whole pack…'),
+    ((state.eco && state.eco.packs) || []).map((p) => h('optgroup', { label: `${p.icon} ${p.name}` },
+      h('option', { value: 'pack:' + p.id }, `★ Whole ${p.name}`),
+      state.eco.tags.filter((t) => t.pack === p.id).map((t) => h('option', { value: t.id }, `${t.icon} ${t.name} (${t.rarity})`)))));
+  const ccCoins = h('input', { type: 'number', placeholder: 'Coins (e.g. 500)', step: 1, 'aria-label': 'Coins' });
+  const ccGive = (action) => {
+    if (!ccWho.value) return toast('Choose a member first');
+    if (!ccTag.value) return toast('Choose a tag first');
+    const body = ccTag.value.startsWith('pack:') ? { pack: ccTag.value.slice(5), action } : { tag: ccTag.value, action };
+    attempt(async () => {
+      const r = await api(`/users/${ccWho.value}/tags`, 'POST', body);
+      toast2(r.changed.length ? `${action === 'take' ? 'Took' : 'Gave'} ${r.changed.length > 2 ? r.changed.length + ' tags' : r.changed.join(', ')} ${action === 'take' ? 'from' : 'to'} ${r.username}` : `${r.username} ${action === 'take' ? "doesn't have" : 'already has'} that`);
+      load();
+    });
+  };
+  const ccCoinGo = () => {
+    const who = state.users.find((u) => u.id === ccWho.value), n = parseInt(ccCoins.value, 10);
+    if (!who) return toast('Choose a member first');
+    if (!n) return toast('Enter how many coins (a minus takes coins away)');
+    ccCoins.value = ''; run(`givecoins "${who.username}" ${n}`);
+  };
   const chips = ['help', 'stats', 'who', 'users', 'channels'].map((c) => h('button', { class: 'chip', type: 'button', onclick: () => run(c) }, c));
 
   const cc = h('div', { class: 'cc', id: 'cc', role: 'dialog', 'aria-label': 'Command Center' },
@@ -1147,6 +1171,9 @@ function openCommandCenter() {
       panel('s4', h('h3', {}, 'Top posters'), els.posters),
       panel('s4', h('h3', {}, 'Online now'), els.onlineList),
       panel('s6 bc', h('h3', {}, 'Global message', h('em', {}, 'posts in every channel + banner')), box, prev, sendBtn),
+      panel('s6 gift', h('h3', {}, 'Give tags & coins', h('em', {}, 'pick a member')), ccWho, ccTag,
+        h('div', { class: 'cc-row' }, h('button', { class: 'cc-btn', type: 'button', onclick: () => ccGive('give') }, '🎁 Give tag'), h('button', { class: 'chip', type: 'button', onclick: () => ccGive('take') }, 'Take back')),
+        h('div', { class: 'cc-row' }, ccCoins, h('button', { class: 'cc-btn', type: 'button', onclick: ccCoinGo }, '🪙 Give coins'))),
       panel('s6', h('h3', {}, 'Console'), h('div', { class: 'chips' }, chips), term, form),
       panel('s12', h('h3', {}, 'Audit log', h('em', {}, 'what admins did')), els.audit)));
   document.body.append(cc);
@@ -1698,6 +1725,25 @@ function pushDm(msg) {
     if (dmOpen()) drawFriends();
     toast2(`💬 ${userName(other)}: ${msg.content.slice(0, 60)}`);
   }
+}
+
+// Owner and Admins: give or take tags from any pack on a person's profile card.
+function staffTagTools(user) {
+  if (!isAdmin() || !state.eco || !state.eco.packs) return null;
+  const sel = h('select', { 'aria-label': 'Tag to give' }, h('option', { value: '' }, 'Choose a tag…'),
+    state.eco.packs.map((p) => h('optgroup', { label: `${p.icon} ${p.name}` },
+      h('option', { value: 'pack:' + p.id }, `★ Whole ${p.name}`),
+      state.eco.tags.filter((t) => t.pack === p.id).map((t) => h('option', { value: t.id }, `${t.icon} ${t.name} (${t.rarity})`)))));
+  const go = (action) => {
+    if (!sel.value) return toast('Choose a tag first');
+    const body = sel.value.startsWith('pack:') ? { pack: sel.value.slice(5), action } : { tag: sel.value, action };
+    attempt(async () => {
+      const r = await api(`/users/${user.id}/tags`, 'POST', body);
+      toast2(r.changed.length ? `${action === 'take' ? 'Took' : 'Gave'} ${r.changed.length > 2 ? r.changed.length + ' tags' : r.changed.join(', ')} ${action === 'take' ? 'from' : 'to'} ${r.username}` : `${r.username} ${action === 'take' ? "doesn't have" : 'already has'} that`);
+    });
+  };
+  return h('div', { class: 'pop-sec' }, h('h6', {}, 'Tags (staff)'), sel,
+    h('div', { class: 'pop-tagbtns' }, h('button', { class: 'btn primary small', onclick: () => go('give') }, '🎁 Give'), h('button', { class: 'btn small', onclick: () => go('take') }, 'Take back')));
 }
 
 // Buttons shown on a person's profile card.

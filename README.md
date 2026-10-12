@@ -114,3 +114,7 @@ Press the 💬 button on the far-left bar (or a person's name -> Add friend). On
 ## AutoMod
 
 A filter bot blocks cuss words and spam (flooding, repeating the same message, link spam, mass mentions) in channels, edits and DMs. The first offence is a **10 minute mute**, then it doubles (20, 40, 80...). Strikes fade after a week. The Owner and Admins are not filtered unless the Owner turns on "Also filter Owner and Admins" (handy for testing). Owner and Admins lift mutes from the Staff panel or the console (`unmute <user>`); the Owner can also do it, and add extra banned words, in the Owner Panel's AutoMod section.
+
+## Giving tags (Owner and Admins)
+
+Open the **Command Center** (the ⚡ button) and use the **Give tags & coins** panel, or open anyone's profile card (click their name or picture) and use **Tags (staff)**: pick one tag, or a whole pack, then **Give** or **Take back**. The console command `givetag <user> <tag name>` does the same for one tag.

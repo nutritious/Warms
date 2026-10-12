@@ -675,6 +675,27 @@ app.post('/api/dm/:id', auth, (req, res) => {
   res.json(msg);
 });
 
+// Owner and Admins can hand out (or take back) tags: one tag, or a whole pack.
+app.post('/api/users/:id/tags', auth, (req, res) => {
+  if (!isAdmin(req.user)) return res.status(403).json({ error: 'Only the Owner and Admins can give tags' });
+  const target = db.users[req.params.id];
+  if (!target) return res.status(404).json({ error: 'No such person' });
+  econ(target);
+  const take = req.body.action === 'take';
+  const list = req.body.pack ? TAGS.filter((t) => t.pack === String(req.body.pack)) : TAGS.filter((t) => t.id === String(req.body.tag || ''));
+  if (!list.length) return res.status(400).json({ error: 'Pick a tag or a pack first' });
+  const changed = [];
+  for (const t of list) {
+    const has = target.tags.includes(t.id);
+    if (take && has) { target.tags = target.tags.filter((x) => x !== t.id); if (target.tag === t.id) target.tag = null; changed.push(t); }
+    else if (!take && !has) { target.tags.push(t.id); changed.push(t); }
+  }
+  if (changed.length) audit(req.user, `${take ? 'took' : 'gave'} ${changed.length > 3 ? changed.length + ' tags' : changed.map((t) => t.name).join(', ')} ${take ? 'from' : 'to'} ${target.username}`);
+  save();
+  broadcast({ t: 'members' });
+  res.json({ ok: true, changed: changed.map((t) => t.name), skipped: list.length - changed.length, username: target.username });
+});
+
 /* -------------------------------------------------------------- messages */
 
 const UPLOAD_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
@@ -1356,6 +1377,7 @@ const HELP = [
   '  rename <new server name>   rename the server',
   '  givecoins <user> <amount>  give (or take, with a minus) play coins',
   '  unmute <user>              lift a mute (also clears AutoMod strikes)',
+  '  givetag <user> <tag>       give a tag by its name (e.g. givetag Bob Rainbow Doge)',
 ];
 
 app.post('/api/admin/command', auth, (req, res) => {
@@ -1364,7 +1386,7 @@ app.post('/api/admin/command', auth, (req, res) => {
   if (!raw) return res.json({ output: [] });
   const [cmd, ...args] = tokenize(raw);
   const rest = raw.slice(cmd.length).trim();
-  const AUDITED = ['announce', 'role', 'kick', 'purge', 'rename', 'givecoins', 'unmute'];
+  const AUDITED = ['announce', 'role', 'kick', 'purge', 'rename', 'givecoins', 'unmute', 'givetag'];
   const done = (output, ok = true) => {
     if (ok && AUDITED.includes(cmd.toLowerCase())) audit(req.user, 'console: ' + raw.slice(0, 120));
     res.json({ output: [].concat(output), ok });
@@ -1471,6 +1493,18 @@ app.post('/api/admin/command', auth, (req, res) => {
       save();
       broadcast({ t: 'members' });
       return done(`${target.username} now has ${target.coins} coins.`);
+    }
+
+    case 'givetag': {
+      const target = findUser(args[0] || '');
+      const name = args.slice(1).join(' ').toLowerCase();
+      const tag = TAGS.find((t) => t.id === name || t.name.toLowerCase() === name);
+      if (!target || !tag) return done('Usage: givetag <user> <tag name>', false);
+      econ(target);
+      if (!target.tags.includes(tag.id)) target.tags.push(tag.id);
+      save();
+      broadcast({ t: 'members' });
+      return done(`${target.username} now has the ${tag.name} tag.`);
     }
 
     case 'unmute': {

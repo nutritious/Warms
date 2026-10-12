@@ -1120,3 +1120,12 @@ body {
   .modal.dmwin.has-chat .dm-chat { display: flex; }
   .dm-back { display: block; }
 }
+
+.pop-tagbtns { display: flex; gap: 8px; margin-top: 8px; }
+.pop-sec select { max-width: 100%; }
+
+/* Command Center: give tags and coins */
+.cc .gift select, .cc .gift input { width: 100%; margin-bottom: 8px; background: #0006; color: inherit; border: 1px solid #fff2; border-radius: 8px; padding: 8px 10px; font: inherit; }
+.cc .gift .cc-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.cc .gift .cc-row input { margin: 0; flex: 1; min-width: 0; }
+.cc .gift .cc-row .cc-btn { flex: none; }
