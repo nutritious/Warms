@@ -1149,3 +1149,105 @@ body {
 .ul-actions { display: flex; gap: 6px; margin-top: 8px; }
 .modal.ulog-edit { width: min(480px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 8px; }
 .modal.ulog-edit textarea { width: 100%; resize: vertical; font: inherit; }
+
+/* ---- v14: messages screen (docked next to the left bar) ---- */
+.dmview {
+  flex: 1; min-width: 0; display: grid; grid-template-columns: 310px minmax(0, 1fr); overflow: hidden;
+  border-radius: var(--radius); border: 1px solid var(--edge); box-shadow: var(--shadow);
+  background: color-mix(in srgb, var(--main) 58%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(150%); backdrop-filter: blur(22px) saturate(150%);
+  animation: dmIn .22s cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes dmIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+.app.dm-open .main, .app.dm-open .members { display: none; }
+.rail-dm.active { color: #fff; }
+.dmview .dm-list { padding: 14px 12px; overflow-y: auto; border-right: 1px solid var(--edge); background: #0002; display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.dm-title { display: flex; align-items: center; justify-content: space-between; margin: 2px 4px 8px; }
+.dm-title h3 { margin: 0; font-size: 18px; }
+.dm-close { border: 0; background: transparent; color: inherit; opacity: .6; font-size: 16px; cursor: pointer; border-radius: 8px; width: 30px; height: 30px; }
+.dm-close:hover { opacity: 1; background: #ffffff18; }
+.dm-search { width: 100%; margin-bottom: 6px; }
+.dm-friends { flex: 1; }
+.dmview .dm-add { position: sticky; bottom: 0; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--edge); background: color-mix(in srgb, var(--side) 85%, transparent); }
+.dm-row { position: relative; }
+.dm-row.unread .dm-name { color: #fff; }
+.dm-row.unread .dm-sub { color: inherit; opacity: .95; font-weight: 600; }
+.dm-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.dm-mid .dm-name { flex: none; }
+.dm-sub { font-size: 12px; opacity: .6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.dm-when { font-size: 11px; opacity: .5; }
+.dm-row .dm-av { flex-shrink: 0; }
+.dmview .dm-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.dmview .dm-head { padding: 10px 14px; gap: 12px; height: 62px; box-sizing: border-box; }
+.dm-who { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.dm-who b { display: flex; align-items: center; gap: 6px; }
+.dm-status { font-size: 12px; opacity: .6; }
+.dmview .dm-feed { padding: 16px 20px; gap: 2px; }
+.dmview .dm-msg { max-width: 72%; }
+.dm-day { display: flex; align-items: center; gap: 12px; margin: 14px 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; opacity: .55; }
+.dm-day::before, .dm-day::after { content: ""; flex: 1; height: 1px; background: currentColor; opacity: .3; }
+.dm-line { display: flex; align-items: center; gap: 6px; max-width: 100%; }
+.dm-msg.mine .dm-line { flex-direction: row; }
+.dm-del { border: 0; background: transparent; cursor: pointer; opacity: 0; font-size: 13px; padding: 2px 4px; border-radius: 6px; transition: opacity .12s; }
+.dm-msg:hover .dm-del, .dm-del:focus-visible { opacity: .7; }
+.dm-del:hover { opacity: 1; background: #ffffff18; }
+.dm-bubble.pic { padding: 4px; background: transparent !important; }
+.dm-img { display: block; max-width: min(320px, 100%); max-height: 300px; border-radius: 12px; cursor: zoom-in; margin: 2px 0; }
+.dm-bubble .dm-img + * { margin-top: 4px; }
+.dm-typing { min-height: 18px; padding: 0 22px 2px; font-size: 12px; opacity: .65; font-style: italic; }
+.dm-pending { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-top: 1px solid var(--edge); }
+.dm-pending img { height: 54px; border-radius: 8px; }
+.dm-pending span { flex: 1; font-size: 13px; opacity: .7; }
+.dmview .dm-compose { align-items: flex-end; padding: 10px 14px 14px; gap: 8px; }
+.dm-compose textarea {
+  flex: 1; min-width: 0; resize: none; max-height: 140px; overflow-y: auto; font: inherit; color: inherit; line-height: 1.35;
+  padding: 10px 14px; border-radius: 14px; border: 1px solid var(--edge); background: #0003; outline: none;
+}
+.dm-compose textarea:focus { border-color: var(--accent); }
+.dm-compose .attach { position: static; align-self: flex-end; height: 40px; }
+.dm-compose .btn { height: 40px; }
+.mem-dm { margin-left: auto; border: 0; background: transparent; cursor: pointer; font-size: 14px; opacity: 0; padding: 2px 6px; border-radius: 8px; }
+.member:hover .mem-dm, .mem-dm:focus-visible { opacity: .85; }
+.mem-dm:hover { background: #ffffff18; opacity: 1; }
+.head-dm { display: none; margin-left: auto; position: relative; border: 0; background: transparent; font-size: 20px; cursor: pointer; padding: 4px 8px; }
+.dmtoast:hover { filter: brightness(1.15); }
+@media (max-width: 700px) {
+  .head-dm { display: block; }
+  .app.dm-open .side { display: none; }
+  .dmview { grid-template-columns: 1fr; }
+  .dmview .dm-chat { display: none; }
+  .dmview.has-chat .dm-list { display: none; }
+  .dmview.has-chat .dm-chat { display: flex; }
+  .dmview .dm-back { display: block; }
+  .dmview .dm-msg { max-width: 88%; }
+  .dm-del { opacity: .6; }
+}
+@media (prefers-reduced-motion: reduce) { .dmview { animation: none; } }
+.dm-compose .attach { background: none; border: 0; color: var(--muted); font-size: 22px; padding: 0 8px; cursor: pointer; }
+.dm-compose .attach:hover { color: var(--accent); }
+
+/* ---- v14: screen sharing ---- */
+.vlive { margin-left: 6px; font-size: 9px; font-weight: 800; letter-spacing: .08em; padding: 2px 6px; border-radius: 6px; background: #ef4444; color: #fff; }
+.vuser.watchable { cursor: pointer; }
+.vuser.watchable:hover { background: #ffffff14; border-radius: 8px; }
+.vbtn.live { background: color-mix(in srgb, #ef4444 35%, transparent); }
+.screenview {
+  position: fixed; right: 16px; bottom: 16px; z-index: 70; width: min(520px, calc(100vw - 32px));
+  border-radius: 14px; overflow: hidden; border: 1px solid var(--edge); box-shadow: 0 18px 50px rgba(0,0,0,.55);
+  background: #000; display: flex; flex-direction: column;
+}
+.screenview.big { width: min(1100px, calc(100vw - 32px)); right: 50%; transform: translateX(50%); bottom: 24px; }
+.sv-head { display: flex; align-items: center; gap: 4px; padding: 6px 8px 6px 12px; background: color-mix(in srgb, var(--side) 92%, #000); color: var(--head, #fff); font-size: 13px; font-weight: 700; }
+.sv-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-btn { border: 0; background: transparent; color: inherit; cursor: pointer; width: 28px; height: 28px; border-radius: 8px; font-size: 15px; }
+.sv-btn:hover { background: #ffffff22; }
+.screenview video { width: 100%; max-height: 70vh; aspect-ratio: 16 / 9; object-fit: contain; background: #000; display: block; }
+.dm-search, .dm-add select {
+  font: inherit; color: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--edge); background: #0003; outline: none; box-sizing: border-box;
+}
+.dm-search:focus, .dm-add select:focus { border-color: var(--accent); }
+.dm-add select option { background: #1c1411; color: #fff; }
+.own-sub { margin: 14px 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; opacity: .65; }
+.own-coins { max-height: 240px; overflow-y: auto; }
+.own-coinamt { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; color: #f5b83d; }

@@ -22,6 +22,10 @@ function h(tag, attrs, ...kids) {
   return el;
 }
 
+// Browsers turn a null child into the word "null"; skip empty slots the same way h() does.
+const nativeReplace = Element.prototype.replaceChildren;
+Element.prototype.replaceChildren = function (...nodes) { return nativeReplace.apply(this, nodes.flat().filter((n) => n != null && n !== false)); };
+
 const PERM_INFO = {
   manage_roles: ['Manage roles', 'Create and edit roles, and assign them to people ranked below you.'],
   manage_channels: ['Manage channels', 'Create and delete channels, and rename the server.'],
@@ -317,6 +321,8 @@ function connectWs() {
       dropPeer(m.userId);
     } else if (m.t === 'voice-signal') {
       onVoiceSignal(m.from, m.data);
+    } else if (m.t === 'voice-share-denied') {
+      stopShare(); toast(`${userName(m.by)} is already sharing in this channel`);
     } else if (m.t === 'voice-error') {
       cleanupVoice(); toast(m.error);
     } else if (m.t === 'announce') {
@@ -333,6 +339,10 @@ function connectWs() {
       attempt(loadUpdates);
     } else if (m.t === 'dm') {
       pushDm(m.msg);
+    } else if (m.t === 'dm-del') {
+      dmDeleted(m);
+    } else if (m.t === 'dm-typing') {
+      dmTyping(m.from);
     } else if (m.t === 'friends') {
       if (m.kind === 'request') toast2(`🤝 ${m.from} sent you a friend request`);
       else if (m.kind === 'accepted') toast2(`🎉 ${m.from} is now your friend`);
@@ -385,7 +395,7 @@ function renderChrome() {
     const ids = inSpace(sp2.id).map((c) => c.id);
     const un = ids.map((id) => state.unread[id]).filter(Boolean);
     const ping = un.some((x) => x.m);
-    return h('button', { class: 'rail-chat' + (sp2.id === state.spaceId ? ' active' : '') + (sp2.icon ? ' has-img' : ''), title: sp2.name, onclick: () => switchSpace(sp2.id) },
+    return h('button', { class: 'rail-chat' + (sp2.id === state.spaceId ? ' active' : '') + (sp2.icon ? ' has-img' : ''), title: sp2.name, onclick: () => { closeDm(); switchSpace(sp2.id); } },
       sp2.icon ? h('img', { class: 'rail-img', src: sp2.icon, alt: '' }) : h('span', {}, spaceInitials(sp2.name)),
       un.length ? h('i', { class: 'rail-dot' + (ping ? ' ping' : '') }) : null);
   }));
@@ -424,7 +434,7 @@ function renderChrome() {
 }
 
 function updateTitle() {
-  const pings = state.hiddenPings + Object.values(state.unread).reduce((n, u) => n + u.m, 0);
+  const pings = state.hiddenPings + Object.values(state.unread).reduce((n, u) => n + u.m, 0) + dmUnreadTotal();
   document.title = (pings ? `(${pings}) ` : '') + curSpace().name;
 }
 window.addEventListener('focus', () => { state.hiddenPings = 0; updateTitle(); });
@@ -445,7 +455,9 @@ function renderMembers() {
       }, avatar(p, true), h('div', { class: 'mtext' },
         h('span', { class: 'mname', style: `color:${role.color}` }, p.username),
         userTag(p),
-        p.status ? h('span', { class: 'mstat' }, p.status) : null)))));
+        p.status ? h('span', { class: 'mstat' }, p.status) : null),
+        p.id !== state.me && state.fr && state.fr.friends.includes(p.id)
+          ? h('button', { type: 'button', class: 'mem-dm', title: 'Message ' + p.username, onclick: (e) => { e.stopPropagation(); openFriends(p.id); } }, '💬') : null))));
   }
   box.replaceChildren(...groups);
 }
@@ -654,6 +666,7 @@ async function loadMessages() {
 }
 
 async function switchChannel(id) {
+  closeDm();
   if (id === state.channelId) return;
   state.channelId = id;
   const chosen = state.channels.find((c) => c.id === id);
@@ -783,7 +796,7 @@ async function newChat() {
 $('addChannel').onclick = newChat;
 $('newChat').onclick = newChat;
 $('railAdd').onclick = newSpace;
-$('railAnn').onclick = () => switchSpace(ANN_SPACE);
+$('railAnn').onclick = () => { closeDm(); switchSpace(ANN_SPACE); };
 
 async function removeChannel(c) {
   if (await confirmBox('Delete #' + c.name + '?', 'All messages in this channel will be deleted for good.')) {
@@ -795,7 +808,7 @@ async function removeChannel(c) {
 
 function hidePopover() { $('popover').classList.add('hidden'); }
 document.addEventListener('mousedown', (e) => { if (!e.target.closest('#popover')) hidePopover(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hidePopover(); closePicker(); if (!$('overlay').classList.contains('hidden')) closeOverlay(); else if ($('cc')) closeCommandCenter(); else if ($('staffcc')) closeStaffPanel(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hidePopover(); closePicker(); if (!$('overlay').classList.contains('hidden')) closeOverlay(); else if (dmOpen()) closeDm(); else if ($('cc')) closeCommandCenter(); else if ($('staffcc')) closeStaffPanel(); } });
 
 function assignableRoles(target) {
   // Mirrors the server rules: admins can give anything; others only roles below their own.
@@ -1669,133 +1682,261 @@ function editEntry(e) {
 
 /* ------------------------------------------------------ friends and direct messages */
 
-state.fr = { friends: [], incoming: [], outgoing: [], unread: {} };
-const D = { active: null, msgs: [], box: null, list: null, chat: null };
-const dmOpen = () => !!(D.box && document.body.contains(D.box));
+state.fr = { friends: [], incoming: [], outgoing: [], unread: {}, last: {} };
+const D = { active: null, msgs: [], view: null, list: null, chat: null, feed: null, search: '', typing: {}, pendingImage: null };
+const dmOpen = () => !!(D.view && D.view.isConnected);
 const userName = (id) => (userById(id) || { username: 'Someone' }).username;
+const dmUnreadTotal = () => Object.values(state.fr.unread || {}).reduce((a, b) => a + b, 0);
 
 function renderDmBadge() {
-  const n = Object.values(state.fr.unread).reduce((a, b) => a + b, 0) + state.fr.incoming.length;
-  const b = $('railDMBadge');
-  b.textContent = n > 9 ? '9+' : String(n);
-  b.classList.toggle('hidden', !n);
+  const n = dmUnreadTotal() + state.fr.incoming.length;
+  for (const id of ['railDMBadge', 'headDMBadge']) {
+    const b = $(id);
+    if (!b) continue;
+    b.textContent = n > 9 ? '9+' : String(n);
+    b.classList.toggle('hidden', !n);
+  }
+  updateTitle();
 }
 async function loadFriends() {
-  try { state.fr = await api('/friends'); } catch { return; }
+  try { state.fr = Object.assign({ last: {} }, await api('/friends')); } catch { return; }
   renderDmBadge();
+  renderMembers();
   if (dmOpen()) drawFriends();
 }
 const friendState = (id) => (state.fr.friends.includes(id) ? 'friend' : state.fr.incoming.includes(id) ? 'incoming' : state.fr.outgoing.includes(id) ? 'outgoing' : 'none');
-const frAct = (path, method, body) => attempt(async () => { state.fr = Object.assign(state.fr, await api(path, method, body)); renderDmBadge(); if (dmOpen()) drawFriends(); });
+const frAct = (path, method, body) => attempt(async () => { state.fr = Object.assign(state.fr, await api(path, method, body)); renderDmBadge(); renderMembers(); if (dmOpen()) drawFriends(); });
 
-$('railDM').onclick = () => openFriends();
+$('railDM').onclick = () => (dmOpen() ? closeDm() : openFriends());
+$('headDM').onclick = () => openFriends();
 
-function openFriends(withId) {
-  if (withId) D.active = withId;
-  const list = h('div', { class: 'dm-list' }), chat = h('div', { class: 'dm-chat' });
-  const box = h('div', { class: 'modal dmwin' + (D.active ? ' has-chat' : '') },
-    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'), list, chat);
-  Object.assign(D, { box, list, chat });
-  openOverlay(box);
-  drawFriends();
-  if (D.active && state.fr.friends.includes(D.active)) openChat(D.active); else { D.active = null; box.classList.remove('has-chat'); drawChat(); }
-  loadFriends();
+function closeDm() {
+  if (D.view) D.view.remove();
+  D.view = D.list = D.chat = D.feed = null;
+  $('app').classList.remove('dm-open');
+  $('railDM').classList.remove('active');
 }
 
-function personRow(id, extra, onclick) {
+// The messages screen sits right in the app (next to the left bar), not in a pop-up.
+function openFriends(withId) {
+  if (!state.me) return;
+  if (!dmOpen()) {
+    const list = h('div', { class: 'dm-list' }), chat = h('div', { class: 'dm-chat' });
+    D.view = h('section', { class: 'dmview' + (withId || D.active ? ' has-chat' : '') }, list, chat);
+    D.list = list; D.chat = chat;
+    $('app').append(D.view);
+    $('app').classList.add('dm-open');
+    $('railDM').classList.add('active');
+    loadFriends();
+  }
+  if (withId && state.fr.friends.includes(withId)) { openChat(withId); return; }
+  if (D.active && state.fr.friends.includes(D.active)) openChat(D.active);
+  else { D.active = null; D.view.classList.remove('has-chat'); drawFriends(); drawChat(); }
+}
+
+function personRow(id, extra, onclick, sub) {
   const u = userById(id);
   if (!u) return null;
-  return h('div', { class: 'dm-row' + (D.active === id ? ' on' : ''), onclick },
+  return h('div', { class: 'dm-row' + (D.active === id ? ' on' : '') + (state.fr.unread[id] ? ' unread' : ''), onclick },
     h('div', { class: 'dm-av' }, avatar(u, true), h('i', { class: 'dm-dot' + (u.online ? ' on' : '') })),
-    h('span', { class: 'dm-name' }, u.username, userTag(u)), extra);
+    h('span', { class: 'dm-mid' }, h('span', { class: 'dm-name' }, u.username, userTag(u)), sub ? h('span', { class: 'dm-sub' }, sub) : null), extra);
 }
 
+const ago2 = (ts) => {
+  const s = (Date.now() - ts) / 1000;
+  if (s < 60) return 'now';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+};
+
 function drawFriends() {
-  const fr = state.fr;
+  if (!D.list) return;
+  const fr = state.fr, q = D.search.trim().toLowerCase();
+  const search = h('input', { type: 'search', class: 'dm-search', placeholder: 'Search friends…', 'aria-label': 'Search friends', value: D.search,
+    oninput: (e) => { D.search = e.target.value; const pos = e.target.selectionStart; drawFriends(); const n = D.list.querySelector('.dm-search'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } } });
   const pick = h('select', { 'aria-label': 'Add a friend' }, h('option', { value: '' }, 'Add a friend…'),
     state.users.filter((u) => u.id !== state.me && friendState(u.id) === 'none').map((u) => h('option', { value: u.id }, u.username)));
   const add = h('button', { type: 'button', class: 'btn primary small', onclick: () => { if (!pick.value) return toast('Choose someone first'); frAct('/friends/request', 'POST', { userId: pick.value }); toast2('Friend request sent'); } }, 'Add');
+  const lastOf = (id) => (fr.last || {})[id];
+  const friends = fr.friends.filter((id) => !q || userName(id).toLowerCase().includes(q)).sort((a, b) => {
+    const la = lastOf(a), lb = lastOf(b);
+    if (la && lb) return lb.ts - la.ts;
+    if (la || lb) return la ? -1 : 1;
+    return ((userById(b) || {}).online ? 1 : 0) - ((userById(a) || {}).online ? 1 : 0) || userName(a).localeCompare(userName(b));
+  });
+  const row = (id) => {
+    const l = lastOf(id), typing = (D.typing[id] || 0) > Date.now();
+    const sub = typing ? 'typing…' : l ? (l.from === state.me ? 'You: ' : '') + l.text : (userById(id) || {}).online ? 'Online' : 'Say hi';
+    return personRow(id, h('span', { class: 'dm-meta' }, l ? h('span', { class: 'dm-when' }, ago2(l.ts)) : null,
+      fr.unread[id] ? h('span', { class: 'dm-unread' }, String(fr.unread[id])) : null), () => openChat(id), sub);
+  };
   D.list.replaceChildren(
-      h('h3', {}, 'Friends'),
-      h('div', { class: 'dm-add' }, pick, add),
-      fr.incoming.length ? h('div', { class: 'dm-sec' }, h('h6', {}, 'Requests'),
-        fr.incoming.map((id) => personRow(id, h('span', { class: 'dm-btns' },
-          h('button', { type: 'button', class: 'mini', title: 'Accept', onclick: (e) => { e.stopPropagation(); frAct('/friends/accept', 'POST', { userId: id }); } }, '✓'),
-          h('button', { type: 'button', class: 'mini danger', title: 'Decline', onclick: (e) => { e.stopPropagation(); frAct('/friends/decline', 'POST', { userId: id }); } }, '✕')), null))) : null,
-      h('div', { class: 'dm-sec' }, h('h6', {}, `Friends — ${fr.friends.length}`),
-        fr.friends.length
-          ? fr.friends.slice().sort((a, b) => (userById(b) || {}).online - (userById(a) || {}).online || userName(a).localeCompare(userName(b))).map((id) =>
-              personRow(id, fr.unread[id] ? h('span', { class: 'dm-unread' }, String(fr.unread[id])) : null, () => openChat(id)))
-          : h('div', { class: 'note' }, 'No friends yet. Add someone above, or press a name in the member list.')),
-      fr.outgoing.length ? h('div', { class: 'dm-sec' }, h('h6', {}, 'Waiting for an answer'),
-        fr.outgoing.map((id) => personRow(id, h('button', { type: 'button', class: 'mini', onclick: (e) => { e.stopPropagation(); frAct('/friends/decline', 'POST', { userId: id }); } }, 'Cancel'), null))) : null);
+    h('div', { class: 'dm-title' }, h('h3', {}, '💬 Messages'),
+      h('button', { type: 'button', class: 'dm-close', title: 'Close messages (Esc)', onclick: closeDm }, '✕')),
+    search,
+    fr.incoming.length ? h('div', { class: 'dm-sec' }, h('h6', {}, `Friend requests — ${fr.incoming.length}`),
+      fr.incoming.map((id) => personRow(id, h('span', { class: 'dm-btns' },
+        h('button', { type: 'button', class: 'mini', title: 'Accept', onclick: (e) => { e.stopPropagation(); frAct('/friends/accept', 'POST', { userId: id }); } }, '✓'),
+        h('button', { type: 'button', class: 'mini danger', title: 'Decline', onclick: (e) => { e.stopPropagation(); frAct('/friends/decline', 'POST', { userId: id }); } }, '✕')), null, 'wants to be friends'))) : null,
+    h('div', { class: 'dm-sec dm-friends' }, h('h6', {}, `Friends — ${fr.friends.length}`),
+      friends.length ? friends.map(row)
+        : h('div', { class: 'note' }, fr.friends.length ? 'No one matches.' : 'No friends yet. Add someone below, or open a name in the member list and press Add friend.')),
+    fr.outgoing.length ? h('div', { class: 'dm-sec' }, h('h6', {}, 'Waiting for an answer'),
+      fr.outgoing.map((id) => personRow(id, h('button', { type: 'button', class: 'mini', onclick: (e) => { e.stopPropagation(); frAct('/friends/decline', 'POST', { userId: id }); } }, 'Cancel'), null, 'request sent'))) : null,
+    h('div', { class: 'dm-add' }, pick, add));
 }
 
 async function openChat(id) {
   D.active = id;
-  if (D.box) D.box.classList.add('has-chat');
+  D.pendingImage = null;
+  if (D.view) D.view.classList.add('has-chat');
   state.fr.unread[id] = 0; renderDmBadge();
+  drawFriends();
   try { D.msgs = await api('/dm/' + id); } catch (e) { toast(e.message); D.msgs = []; }
   if (D.active !== id) return;
   drawFriends(); drawChat();
 }
 
+async function dmUpload(file) {
+  if (!file) return null;
+  if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { toast('Only PNG, JPG, GIF or WEBP images'); return null; }
+  if (file.size > 5 * 1024 * 1024) { toast('Image is over 5 MB'); return null; }
+  const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+  const out = await attempt(() => api('/upload', 'POST', { data: dataUrl }));
+  return out ? out.url : null;
+}
+
 function drawChat() {
+  if (!D.chat) return;
   const id = D.active;
-  if (!id || !D.chat) { if (D.chat) D.chat.replaceChildren(h('div', { class: 'dm-empty' }, h('div', { class: 'big' }, '💬'), 'Pick a friend to start chatting')); return; }
+  if (!id) { D.chat.replaceChildren(h('div', { class: 'dm-empty' }, h('div', { class: 'big' }, '💬'), h('div', {}, 'Pick a friend to start chatting'), h('div', { class: 'note' }, 'Your messages are private between the two of you.'))); D.feed = null; return; }
   const u = userById(id);
   const feed = h('div', { class: 'dm-feed' });
   D.feed = feed;
-  const input = h('input', { type: 'text', maxlength: 2000, placeholder: 'Message ' + (u ? u.username : ''), autocomplete: 'off' });
-  const form = h('form', { class: 'dm-compose', onsubmit: (e) => {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
+  const typingEl = h('div', { class: 'dm-typing' }, ' ');
+  D.typingEl = typingEl;
+  const pending = h('div', { class: 'dm-pending hidden' });
+  D.pendingEl = pending;
+  const input = h('textarea', { rows: 1, maxlength: 2000, placeholder: 'Message ' + (u ? u.username : ''), 'aria-label': 'Message' });
+  D.input = input;
+  const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px'; };
+  let lastType = 0;
+  input.addEventListener('input', () => {
+    grow();
+    if (input.value && Date.now() - lastType > 3000) { lastType = Date.now(); api(`/dm/${id}/typing`, 'POST').catch(() => {}); }
+  });
+  const showPending = () => {
+    pending.classList.toggle('hidden', !D.pendingImage);
+    pending.replaceChildren(...(D.pendingImage ? [h('img', { src: D.pendingImage, alt: 'pending upload' }), h('span', {}, 'Ready to send'),
+      h('button', { type: 'button', class: 'icon-btn', title: 'Remove', onclick: () => { D.pendingImage = null; showPending(); } }, '✕')] : []));
+  };
+  const attach = async (file) => { const url = await dmUpload(file); if (url) { D.pendingImage = url; showPending(); input.focus(); } };
+  const send = () => {
+    const text = input.value.trim(), image = D.pendingImage;
+    if (!text && !image) return;
+    input.value = ''; D.pendingImage = null; grow(); showPending();
     attempt(async () => {
-      try { const m = await api('/dm/' + id, 'POST', { content: text }); pushDm(m); }
-      catch (err) { input.value = text; throw err; }
+      try { const m = await api('/dm/' + id, 'POST', { content: text, image }); pushDm(m); }
+      catch (err) { input.value = text; D.pendingImage = image; grow(); showPending(); throw err; }
     });
-  } }, input, h('button', { type: 'submit', class: 'btn primary small' }, 'Send'));
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  input.addEventListener('paste', (e) => {
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
+    if (item) { e.preventDefault(); attach(item.getAsFile()); }
+  });
+  const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp', hidden: true, onchange: (e) => { attach(e.target.files[0]); e.target.value = ''; } });
+  const form = h('form', { class: 'dm-compose', onsubmit: (e) => { e.preventDefault(); send(); } },
+    h('button', { type: 'button', class: 'attach', title: 'Send a picture', onclick: () => file.click() }, '⇡'), file, input,
+    h('button', { type: 'submit', class: 'btn primary small' }, 'Send'));
   D.chat.replaceChildren(
     h('header', { class: 'dm-head' },
-      h('button', { type: 'button', class: 'dm-back', title: 'Back', onclick: () => { D.active = null; D.box.classList.remove('has-chat'); drawFriends(); } }, '‹'),
-      u ? avatar(u, true) : null, h('b', {}, u ? u.username : 'Unknown'), u ? userTag(u) : null,
+      h('button', { type: 'button', class: 'dm-back', title: 'Back to friends', onclick: () => { D.active = null; D.view.classList.remove('has-chat'); drawFriends(); drawChat(); } }, '‹'),
+      u ? h('div', { class: 'dm-av' }, avatar(u, true), h('i', { class: 'dm-dot' + (u.online ? ' on' : '') })) : null,
+      h('div', { class: 'dm-who' }, h('b', {}, u ? u.username : 'Unknown', u ? userTag(u) : null), h('span', { class: 'dm-status' }, u && u.online ? 'Online' : 'Offline')),
       h('button', { type: 'button', class: 'mini danger', style: 'margin-left:auto', onclick: async () => {
-        if (await confirmBox('Remove friend?', `${u ? u.username : 'This person'} will be removed from your friends and you will not be able to message each other.`, 'Remove')) { D.active = null; if (D.box) D.box.classList.remove('has-chat'); await frAct('/friends/' + id, 'DELETE'); drawChat(); }
-      } }, 'Unfriend')),
-    feed, form);
+        if (await confirmBox('Remove friend?', `${u ? u.username : 'This person'} will be removed from your friends and you will not be able to message each other.`, 'Remove')) { D.active = null; if (D.view) D.view.classList.remove('has-chat'); await frAct('/friends/' + id, 'DELETE'); drawChat(); }
+      } }, 'Unfriend'),
+      h('button', { type: 'button', class: 'dm-close', title: 'Close messages (Esc)', onclick: closeDm }, '✕')),
+    feed, pending, typingEl, form);
   drawFeed();
+  showPending();
+  drawDmTyping();
   input.focus();
 }
 
+const dayLabel = (ts) => {
+  const d = new Date(ts), t = new Date(), y = new Date(Date.now() - 86400000);
+  if (d.toDateString() === t.toDateString()) return 'Today';
+  if (d.toDateString() === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+};
+
 function drawFeed() {
-  if (!D.feed) return;
-  if (!D.msgs.length) { D.feed.replaceChildren(h('div', { class: 'dm-empty small' }, 'This is the start of your chat. Say hi!')); return; }
-  D.feed.replaceChildren(...D.msgs.map((m, i) => {
+  const feed = D.feed;
+  if (!feed) return;
+  if (!D.msgs.length) { feed.replaceChildren(h('div', { class: 'dm-empty small' }, 'This is the start of your chat. Say hi!')); return; }
+  const out = [];
+  D.msgs.forEach((m, i) => {
     const mine = m.from === state.me, prev = D.msgs[i - 1];
-    const first = !prev || prev.from !== m.from || m.ts - prev.ts > 5 * 60 * 1000;
-    return h('div', { class: 'dm-msg' + (mine ? ' mine' : '') + (first ? ' first' : '') },
-      h('div', { class: 'dm-bubble', title: fmtStamp(m.ts) }, m.content),
-      first ? h('span', { class: 'time' }, fmtTime(m.ts)) : null);
-  }));
-  D.feed.scrollTop = D.feed.scrollHeight;
+    if (!prev || new Date(prev.ts).toDateString() !== new Date(m.ts).toDateString()) out.push(h('div', { class: 'dm-day' }, h('span', {}, dayLabel(m.ts))));
+    const first = !prev || prev.from !== m.from || m.ts - prev.ts > 5 * 60 * 1000 || (out[out.length - 1] && out[out.length - 1].classList.contains('dm-day'));
+    out.push(h('div', { class: 'dm-msg' + (mine ? ' mine' : '') + (first ? ' first' : ''), 'data-dmid': m.id },
+      h('div', { class: 'dm-line' },
+        mine ? h('button', { type: 'button', class: 'dm-del', title: 'Delete this message', onclick: async () => {
+          if (await confirmBox('Delete message?', 'It will disappear for both of you.', 'Delete')) attempt(() => api(`/dm/${D.active}/${m.id}`, 'DELETE'));
+        } }, '🗑') : null,
+        h('div', { class: 'dm-bubble' + (m.image && !m.content ? ' pic' : ''), title: fmtStamp(m.ts) },
+          m.image ? h('img', { class: 'dm-img', src: m.image, alt: 'picture', onclick: () => openLightbox(m.image) }) : null,
+          m.content ? renderText(m.content) : null)),
+      first ? h('span', { class: 'time' }, fmtTime(m.ts)) : null));
+  });
+  feed.replaceChildren(...out);
+  feed.scrollTop = feed.scrollHeight;
+  for (const img of feed.querySelectorAll('img.dm-img')) img.addEventListener('load', () => { feed.scrollTop = feed.scrollHeight; }, { once: true });
+}
+
+function drawDmTyping() {
+  if (!D.typingEl || !D.active) return;
+  const on = (D.typing[D.active] || 0) > Date.now();
+  D.typingEl.textContent = on ? `${userName(D.active)} is typing…` : ' ';
+}
+setInterval(() => { if (dmOpen()) { drawDmTyping(); } }, 1000);
+
+function dmToast(text, id) {
+  const x = h('div', { class: 'toast dmtoast', style: 'border-left-color:#43b581;cursor:pointer', title: 'Open this chat', onclick: () => { x.remove(); openFriends(id); } }, text);
+  document.body.append(x);
+  setTimeout(() => x.remove(), 5000);
 }
 
 function pushDm(msg) {
   const other = msg.from === state.me ? msg.to : msg.from;
+  state.fr.last = state.fr.last || {};
+  state.fr.last[other] = { from: msg.from, text: msg.content || (msg.image ? '📷 Photo' : ''), ts: msg.ts };
+  if (msg.from !== state.me) delete D.typing[other];
   if (D.active === other && dmOpen()) {
     if (!D.msgs.some((x) => x.id === msg.id)) D.msgs.push(msg);
-    drawFeed();
+    drawFeed(); drawFriends(); drawDmTyping();
     if (msg.from !== state.me) api('/dm/' + other + '/read', 'POST').catch(() => {});
     return;
   }
   if (msg.from !== state.me) {
     state.fr.unread[other] = (state.fr.unread[other] || 0) + 1;
     renderDmBadge();
-    if (dmOpen()) drawFriends();
-    toast2(`💬 ${userName(other)}: ${msg.content.slice(0, 60)}`);
+    dmToast(`💬 ${userName(other)}: ${msg.content ? msg.content.slice(0, 60) : '📷 Photo'}`, other);
   }
+  if (dmOpen()) drawFriends();
+}
+
+function dmDeleted(m) {
+  const other = m.a === state.me ? m.b : m.a;
+  if (D.active === other) { D.msgs = D.msgs.filter((x) => x.id !== m.id); drawFeed(); }
+  attempt(loadFriends);
+}
+function dmTyping(from) {
+  D.typing[from] = Date.now() + 4000;
+  if (dmOpen()) { drawDmTyping(); drawFriends(); setTimeout(() => dmOpen() && drawFriends(), 4100); }
 }
 
 // Owner and Admins: give or take tags from any pack on a person's profile card.
@@ -1889,6 +2030,16 @@ async function openOwnerPanel() {
 
   const coinSel = h('select', {}, h('option', { value: '' }, 'Choose a member…'), state.users.map((u) => h('option', { value: u.id }, u.username + (u.id === state.me ? ' (you)' : ''))));
   const coinAmt = h('input', { type: 'number', placeholder: 'Coins (e.g. 500)', step: 1, inputmode: 'numeric' });
+  const coinBox = h('div', { class: 'own-coins' });
+  const paintCoins = () => {
+    const rows = state.users.map((u) => ({ u, c: (data.coins || {})[u.id] || 0 })).sort((a, b) => b.c - a.c || a.u.username.localeCompare(b.u.username));
+    const total = rows.reduce((n, r) => n + r.c, 0);
+    coinBox.replaceChildren(
+      h('div', { class: 'note' }, `${total.toLocaleString()} coins across ${rows.length} member${rows.length === 1 ? '' : 's'}`),
+      ...rows.map((r) => h('div', { class: 'own-row' }, avatar(r.u, true), h('span', { class: 'own-name' }, r.u.username + (r.u.id === state.me ? ' (you)' : '')),
+        h('span', { class: 'own-coinamt' }, '🪙 ' + r.c.toLocaleString()))));
+  };
+  paintCoins();
   const st = data.storage || { persistent: true };
   const restoreFile = h('input', { type: 'file', accept: '.json,application/json', class: 'hidden' });
   restoreFile.addEventListener('change', async () => {
@@ -1981,9 +2132,10 @@ async function openOwnerPanel() {
       h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => {
         if (!coinSel.value) return toast('Choose a member first');
         if (!coinAmt.value) return toast('Enter how many coins');
-        attempt(async () => { const r = await api('/owner/give-coins', 'POST', { userId: coinSel.value, amount: Number(coinAmt.value) }); coinAmt.value = ''; toast2(r.username + ' now has ' + r.coins + ' coins'); });
+        attempt(async () => { const r = await api('/owner/give-coins', 'POST', { userId: coinSel.value, amount: Number(coinAmt.value) }); coinAmt.value = ''; (data.coins ||= {})[coinSel.value] = r.coins; paintCoins(); toast2(r.username + ' now has ' + r.coins + ' coins'); });
       } }, 'Give coins'),
-      h('div', { class: 'note' }, 'Use a minus number (like -100) to take coins away.')),
+      h('div', { class: 'note' }, 'Use a minus number (like -100) to take coins away.'),
+      h('h5', { class: 'own-sub' }, 'Coins each member has'), coinBox),
     h('section', {}, h('h4', {}, '💾 Save & restore'),
       h('div', { class: 'note ' + (st.persistent ? 'store-ok' : 'store-bad') }, st.persistent
         ? (st.database ? '✔ Your data is saved in an external database. Updates will not erase it.' : '✔ Your data is on a permanent disk. Updates will not erase it.')
@@ -2079,7 +2231,7 @@ function playIntro() {
    Audio goes straight between browsers (WebRTC). The server only passes the handshake along. */
 
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
-const V = { room: null, local: null, peers: new Map(), muted: false, deaf: false, ctx: null, pending: false };
+const V = { room: null, local: null, peers: new Map(), muted: false, deaf: false, ctx: null, pending: false, screen: null, sharer: null, watching: null, sharePending: false };
 const wsSend = (o) => { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify(o)); };
 
 async function joinVoice(room) {
@@ -2105,7 +2257,9 @@ function leaveVoice(silent) {
 }
 
 function cleanupVoice() {
+  if (V.screen) { V.screen.getTracks().forEach((t) => { t.onended = null; t.stop(); }); V.screen = null; }
   for (const id of [...V.peers.keys()]) dropPeer(id);
+  V.sharer = null; V.watching = null;
   if (V.local) V.local.getTracks().forEach((t) => t.stop());
   V.local = null; V.room = null; V.muted = false; V.deaf = false;
   levels.clear();
@@ -2114,17 +2268,31 @@ function cleanupVoice() {
 
 function onVoiceJoined(m) {
   if (V.room !== m.room) return;
-  m.peers.forEach((id) => makePeer(id, true));
+  m.peers.forEach((id) => makePeer(id));
 }
 
-function makePeer(id, initiator) {
+// "Perfect negotiation": either side may start a new handshake (needed when someone starts sharing their screen).
+// The side with the smaller id is "polite" and backs down if both start at once.
+async function setLocal(pc) {
+  try { await pc.setLocalDescription(); }
+  catch (e) { await pc.setLocalDescription(pc.signalingState === 'have-remote-offer' ? await pc.createAnswer() : await pc.createOffer()); }
+}
+
+function makePeer(id) {
   if (V.peers.has(id)) return V.peers.get(id);
   const pc = new RTCPeerConnection(ICE);
-  const peer = { pc, audio: null, queue: [], ready: false };
+  const peer = { pc, audio: null, video: null, queue: [], polite: String(state.me) < String(id), makingOffer: false, ignoreOffer: false, screenSender: null };
   V.peers.set(id, peer);
   V.local.getTracks().forEach((t) => pc.addTrack(t, V.local));
+  if (V.screen) addScreenTrack(peer);
   pc.onicecandidate = (e) => { if (e.candidate) wsSend({ t: 'voice-signal', to: id, data: { candidate: e.candidate } }); };
   pc.ontrack = (e) => {
+    if (e.track.kind === 'video') {
+      peer.video = e.streams[0] || new MediaStream([e.track]);
+      e.track.onended = () => { if (peer.video && !peer.video.getTracks().some((t) => t.readyState === 'live')) peer.video = null; syncScreen(); };
+      syncScreen();
+      return;
+    }
     if (!peer.audio) {
       peer.audio = new Audio(); peer.audio.autoplay = true; peer.audio.playsInline = true;
       peer.audio.muted = V.deaf;
@@ -2135,29 +2303,35 @@ function makePeer(id, initiator) {
     watchLevel(id, e.streams[0]);
   };
   pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') { toast('Voice connection to ' + ((userById(id) || {}).username || 'someone') + ' failed (a strict network may block it)'); dropPeer(id); } };
-  if (initiator) {
-    pc.onnegotiationneeded = async () => {
-      try { await pc.setLocalDescription(await pc.createOffer()); wsSend({ t: 'voice-signal', to: id, data: { sdp: pc.localDescription } }); } catch (e) { /* peer left */ }
-    };
-  }
+  pc.onnegotiationneeded = async () => {
+    try {
+      peer.makingOffer = true;
+      await setLocal(pc);
+      wsSend({ t: 'voice-signal', to: id, data: { sdp: pc.localDescription } });
+    } catch (e) { /* peer left */ }
+    finally { peer.makingOffer = false; }
+  };
   return peer;
 }
 
 async function onVoiceSignal(from, data) {
   if (!V.room || !V.local || !data) return;
-  const peer = makePeer(from, false);
+  const peer = makePeer(from);
   const pc = peer.pc;
   try {
     if (data.sdp) {
+      const collision = data.sdp.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
+      peer.ignoreOffer = !peer.polite && collision;
+      if (peer.ignoreOffer) return;
       await pc.setRemoteDescription(data.sdp);
-      peer.ready = true;
       for (const c of peer.queue.splice(0)) await pc.addIceCandidate(c).catch(() => {});
       if (data.sdp.type === 'offer') {
-        await pc.setLocalDescription(await pc.createAnswer());
+        await setLocal(pc);
         wsSend({ t: 'voice-signal', to: from, data: { sdp: pc.localDescription } });
       }
     } else if (data.candidate) {
-      if (peer.ready) await pc.addIceCandidate(data.candidate).catch(() => {}); else peer.queue.push(data.candidate);
+      if (!pc.remoteDescription) peer.queue.push(data.candidate);
+      else await pc.addIceCandidate(data.candidate).catch(() => { /* harmless if we ignored that offer */ });
     }
   } catch (e) { /* stale handshake */ }
 }
@@ -2169,14 +2343,85 @@ function dropPeer(id) {
   p.pc.onicecandidate = p.pc.ontrack = p.pc.onconnectionstatechange = p.pc.onnegotiationneeded = null;
   try { p.pc.close(); } catch (e) { /* already closed */ }
   if (p.audio) { p.audio.srcObject = null; p.audio.remove(); }
+  p.video = null;
   levels.delete(id);
+  syncScreen();
+}
+
+/* ---- screen sharing: the video goes straight to each person in the call, one sharer per channel ---- */
+
+function addScreenTrack(peer) {
+  const track = V.screen && V.screen.getVideoTracks()[0];
+  if (!track || peer.screenSender) return;
+  try {
+    peer.screenSender = peer.pc.addTrack(track, V.screen);
+    const s = peer.screenSender, p = s.getParameters();
+    p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}];
+    p.encodings[0].maxBitrate = 2500000;
+    s.setParameters(p).catch(() => {});
+  } catch (e) { /* peer is closing */ }
+}
+
+const canShare = () => !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+
+async function startShare() {
+  if (!V.room || V.screen || V.sharePending) return;
+  if (!canShare()) return toast("Your browser can't share its screen (most phones can't). Try a computer.");
+  const other = ((state.voice && state.voice[V.room]) || []).find((p) => p.sharing && p.userId !== state.me);
+  if (other) return toast(`${userName(other.userId)} is already sharing in this channel`);
+  V.sharePending = true;
+  let stream;
+  try { stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 }, width: { max: 1920 }, height: { max: 1080 } }, audio: false }); }
+  catch (e) { V.sharePending = false; return; /* they pressed cancel */ }
+  V.sharePending = false;
+  if (!V.room) { stream.getTracks().forEach((t) => t.stop()); return; }
+  V.screen = stream;
+  stream.getVideoTracks()[0].onended = () => stopShare();
+  V.peers.forEach(addScreenTrack);
+  wsSend({ t: 'voice-state', muted: V.muted, deaf: V.deaf, sharing: true });
+  renderVoice();
+}
+
+function stopShare() {
+  const s = V.screen;
+  if (!s) return;
+  V.screen = null;
+  V.peers.forEach((p) => { if (p.screenSender) { try { p.pc.removeTrack(p.screenSender); } catch (e) { /* closed */ } p.screenSender = null; } });
+  s.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+  if (V.room) wsSend({ t: 'voice-state', muted: V.muted, deaf: V.deaf, sharing: false });
+  renderVoice();
+}
+
+// Shows or hides the floating viewer for whoever is sharing in my channel.
+function syncScreen() {
+  const room = (V.room && state.voice && state.voice[V.room]) || [];
+  const sh = room.find((p) => p.sharing && p.userId !== state.me);
+  const id = sh ? sh.userId : null;
+  if (id !== V.sharer) { V.sharer = id; V.watching = id; } // auto-open when someone starts
+  let box = $('screenView');
+  const peer = V.watching && V.peers.get(V.watching);
+  if (!V.watching || !peer || !peer.video) { if (box) box.remove(); return; }
+  if (!box) {
+    const video = h('video', { autoplay: true, playsinline: true, muted: true });
+    video.muted = true;
+    box = h('div', { id: 'screenView', class: 'screenview' },
+      h('div', { class: 'sv-head' }, h('span', { class: 'sv-title' }),
+        h('button', { type: 'button', class: 'sv-btn', title: 'Make bigger or smaller', onclick: () => box.classList.toggle('big') }, '⤢'),
+        h('button', { type: 'button', class: 'sv-btn', title: 'Full screen', onclick: () => { const v = box.querySelector('video'); if (v.requestFullscreen) v.requestFullscreen().catch(() => {}); } }, '⛶'),
+        h('button', { type: 'button', class: 'sv-btn', title: 'Stop watching', onclick: () => { V.watching = null; syncScreen(); renderVoice(); } }, '✕')),
+      video);
+    document.body.append(box);
+  }
+  box.querySelector('.sv-title').textContent = `🖥 ${userName(V.watching)}'s screen`;
+  const v = box.querySelector('video');
+  if (v.srcObject !== peer.video) { v.srcObject = peer.video; v.play().catch(() => {}); }
 }
 
 function setVoiceState(muted, deaf) {
   V.muted = muted; V.deaf = deaf;
   if (V.local) V.local.getAudioTracks().forEach((t) => { t.enabled = !muted; });
   V.peers.forEach((p) => { if (p.audio) p.audio.muted = deaf; });
-  wsSend({ t: 'voice-state', muted, deaf });
+  wsSend({ t: 'voice-state', muted, deaf, sharing: !!V.screen });
   renderVoice();
 }
 
@@ -2213,12 +2458,16 @@ function renderVoice() {
       people.map((p) => {
         const u = userById(p.userId);
         if (!u) return null;
-        return h('div', { class: 'vuser', 'data-vuid': p.userId },
+        const live = p.sharing && V.room === c.id;
+        return h('div', { class: 'vuser' + (live && p.userId !== state.me ? ' watchable' : ''), 'data-vuid': p.userId,
+          onclick: live && p.userId !== state.me ? () => { V.watching = p.userId; syncScreen(); } : null, title: live && p.userId !== state.me ? 'Watch their screen' : null },
           avatar(u, false), h('span', { class: 'vname' }, u.username),
+          p.sharing ? h('span', { class: 'vlive' }, 'LIVE') : null,
           p.muted || p.deaf ? h('span', { class: 'vflag', title: p.deaf ? 'Deafened' : 'Muted' }, p.deaf ? '🔇' : '🎙️✕') : null);
       }));
   }));
   bar.classList.toggle('hidden', !V.room);
+  syncScreen();
   if (V.room) {
     const c = state.voiceChannels.find((x) => x.id === V.room);
     const vb = (cls, icon, label, title, fn) => h('button', { class: 'vbtn ' + cls, title, onclick: fn }, h('span', { class: 'vb-ico' }, icon), h('span', { class: 'vb-lbl' }, label));
@@ -2227,6 +2476,7 @@ function renderVoice() {
       h('div', { class: 'vb-btns' },
         vb(V.muted ? 'off' : '', V.muted ? '🔇' : '🎤', V.muted ? 'Unmute' : 'Mute', V.muted ? 'You are muted. Click to turn your microphone back on' : 'Turn your microphone off', () => setVoiceState(!V.muted, V.deaf && V.muted ? false : V.deaf)),
         vb(V.deaf ? 'off' : '', V.deaf ? '🙉' : '🎧', V.deaf ? 'Hear' : 'Deafen', V.deaf ? 'You cannot hear anyone. Click to hear again' : 'Stop hearing everyone (also mutes you)', () => setVoiceState(!V.deaf, !V.deaf)),
+        canShare() ? vb(V.screen ? 'live' : '', '🖥', V.screen ? 'Stop' : 'Share', V.screen ? 'You are sharing your screen. Click to stop' : 'Share your screen with everyone in this channel', () => (V.screen ? stopShare() : startShare())) : null,
         vb('leave', '📞', 'Leave', 'Disconnect from this voice channel', () => leaveVoice())));
   }
 }

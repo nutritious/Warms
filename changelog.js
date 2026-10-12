@@ -62,4 +62,12 @@ module.exports = [
     'Warms can now keep all its data (accounts, chats, coins, tags, pictures) in a free external database, so updates do not sign anyone out or wipe anything',
     'The Owner Panel shows where your data is saved',
   ] },
+  { id: 'v14', date: '2026-10-11', title: 'Better messages and screen sharing', notes: [
+    'Messages now open as a full screen next to the left bar (press the 💬 button, or Esc to close). On phones there is a 💬 button at the top',
+    'See who you talked to last, a preview of the last message, unread counts, and search your friends',
+    'Send pictures in messages, delete your own messages, and see when a friend is typing',
+    'A 💬 button appears next to your friends in the member list for one-click chatting. Press Enter to send, Shift+Enter for a new line',
+    'Owner Panel: see how many coins every member has',
+    'Screen sharing in voice channels: press Share in the voice bar. One person can share per channel, and everyone in the call can watch, go full screen or close it',
+  ] },
 ];

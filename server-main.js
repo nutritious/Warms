@@ -229,7 +229,7 @@ const voice = new Map(); // userId -> { room, ws, muted, deaf }
 function voiceSnapshot() {
   const out = {};
   for (const c of voiceChannels()) out[c.id] = [];
-  for (const [id, v] of voice) if (out[v.room] && db.users[id]) out[v.room].push({ userId: id, muted: v.muted, deaf: v.deaf });
+  for (const [id, v] of voice) if (out[v.room] && db.users[id]) out[v.room].push({ userId: id, muted: v.muted, deaf: v.deaf, sharing: !!v.sharing });
   return out;
 }
 const voiceBroadcast = () => broadcast({ t: 'voice', voice: voiceSnapshot() });
@@ -260,6 +260,13 @@ function handleVoice(ws, userId, m) {
     const v = voice.get(userId);
     if (!v || v.ws !== ws) return;
     v.muted = !!m.muted; v.deaf = !!m.deaf;
+    if (typeof m.sharing === 'boolean' && m.sharing !== !!v.sharing) {
+      if (m.sharing) {
+        const other = [...voice].find(([id, x]) => id !== userId && x.room === v.room && x.sharing);
+        if (other) { send({ t: 'voice-share-denied', by: other[0] }); return voiceBroadcast(); }
+      }
+      v.sharing = m.sharing;
+    }
     voiceBroadcast();
   } else if (m.t === 'voice-signal') {
     const v = voice.get(userId), to = voice.get(String(m.to));
@@ -598,7 +605,12 @@ function friendsView(u) {
     const n = dmList(u.id, id).filter((m) => m.from === id && m.ts > since).length;
     if (n) unread[id] = n;
   }
-  return { friends: u.friends, incoming: u.reqIn, outgoing: u.reqOut, unread };
+  const last = {};
+  for (const id of u.friends) {
+    const l = dmList(u.id, id), m = l[l.length - 1];
+    if (m) last[id] = { from: m.from, text: m.content || (m.image ? '📷 Photo' : ''), ts: m.ts };
+  }
+  return { friends: u.friends, incoming: u.reqIn, outgoing: u.reqOut, unread, last };
 }
 
 app.get('/api/friends', auth, (req, res) => res.json(friendsView(req.user)));
@@ -672,9 +684,11 @@ app.post('/api/dm/:id', auth, (req, res) => {
   if (left) return res.status(403).json({ error: `You are muted for another ${left} min` });
   if (rateLimited('dm:' + me.id, 40, 60000)) return res.status(429).json({ error: 'Slow down a little' });
   const content = String(req.body.content || '').slice(0, 2000);
-  if (!content.trim()) return res.status(400).json({ error: 'Empty message' });
-  if (automodGate(req, res, content, null)) return;
+  const image = typeof req.body.image === 'string' && /^\/uploads\/[a-f0-9]+\.(png|jpg|gif|webp)$/.test(req.body.image) ? req.body.image : null;
+  if (!content.trim() && !image) return res.status(400).json({ error: 'Empty message' });
+  if (content.trim() && automodGate(req, res, content, null)) return;
   const msg = { id: uid(8), from: me.id, to: other.id, content, ts: Date.now() };
+  if (image) msg.image = image;
   const list = dmList(me.id, other.id);
   list.push(msg);
   if (list.length > 2000) list.splice(0, list.length - 2000);
@@ -683,6 +697,27 @@ app.post('/api/dm/:id', auth, (req, res) => {
   sendTo(me.id, { t: 'dm', msg });
   if (other.id !== me.id) sendTo(other.id, { t: 'dm', msg });
   res.json(msg);
+});
+
+app.post('/api/dm/:id/typing', auth, (req, res) => {
+  const me = social(req.user), other = db.users[req.params.id];
+  if (other && areFriends(me, other) && !rateLimited('dmt:' + me.id, 30, 10000)) sendTo(other.id, { t: 'dm-typing', from: me.id });
+  res.json({ ok: true });
+});
+
+// You can delete your own direct messages.
+app.delete('/api/dm/:id/:msgId', auth, (req, res) => {
+  const me = social(req.user), other = db.users[req.params.id];
+  if (!other) return res.status(404).json({ error: 'No such person' });
+  const list = dmList(me.id, other.id), i = list.findIndex((m) => m.id === req.params.msgId);
+  if (i < 0) return res.status(404).json({ error: 'That message is gone' });
+  if (list[i].from !== me.id) return res.status(403).json({ error: 'You can only delete your own messages' });
+  list.splice(i, 1);
+  save();
+  const payload = { t: 'dm-del', id: req.params.msgId, a: me.id, b: other.id };
+  sendTo(me.id, payload);
+  if (other.id !== me.id) sendTo(other.id, payload);
+  res.json({ ok: true });
 });
 
 // Owner and Admins can hand out (or take back) tags: one tag, or a whole pack.
@@ -1192,6 +1227,7 @@ app.get('/api/owner/overview', auth, ownerOnly, (req, res) => {
     welcomeText: db.settings.welcomeText,
     admins: users.filter((u) => u.roleId === 'admin').map((u) => ({ id: u.id, username: u.username, online: online.has(u.id) })),
     members: users.length,
+    coins: Object.fromEntries(users.map((u) => [u.id, Math.max(0, Math.trunc(Number(u.coins) || 0))])),
     sessions: Object.keys(db.sessions).length,
     audit: db.audit.slice(-40).reverse(),
     storage: storageInfo(),
