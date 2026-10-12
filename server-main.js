@@ -19,12 +19,15 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const PERMS = ['manage_roles', 'manage_channels', 'manage_users', 'delete_messages'];
 
+// New sites start invite only. (INVITE_ONLY=0 starts open, which the automated tests use.)
+const INVITE_DEFAULT = process.env.INVITE_ONLY !== '0';
+
 function freshDb() {
   return {
     users: {},
     sessions: {},
     serverName: 'Warms',
-    settings: { registrationOpen: true, welcomeText: 'Welcome {name}! \uD83D\uDC4B' },
+    settings: { registrationOpen: true, inviteOnly: INVITE_DEFAULT, welcomeText: 'Welcome {name}! \uD83D\uDC4B' },
     roles: [
       { id: 'owner', name: 'Owner', color: '#f5b83d', position: 0, perms: PERMS.slice() },
       { id: 'admin', name: 'Admin', color: '#f04747', position: 1, perms: PERMS.slice() },
@@ -54,7 +57,7 @@ const STAFF_HUB = 'staff';
 const HUB_ROLES = ['admin', 'community', 'manager']; // the Owner can always get in
 const SYSTEM_ROLES = ['owner', 'admin', 'community', 'member']; // cannot be deleted or moved
 function migrate() {
-db.settings = Object.assign({ registrationOpen: true, welcomeText: 'Welcome {name}! \uD83D\uDC4B' }, db.settings || {});
+db.settings = Object.assign({ registrationOpen: true, inviteOnly: INVITE_DEFAULT, welcomeText: 'Welcome {name}! \uD83D\uDC4B' }, db.settings || {});
 db.settings.automod = Object.assign({ enabled: true, includeStaff: false, words: [] }, db.settings.automod || {});
 db.events = Array.isArray(db.events) ? db.events : [];
 db.dms = db.dms && typeof db.dms === 'object' ? db.dms : {};
@@ -105,6 +108,9 @@ for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
   }
   db.minigame = db.minigame && typeof db.minigame === 'object' ? db.minigame : null;
   if (!db.codes || typeof db.codes !== 'object' || Array.isArray(db.codes)) db.codes = {};
+  if (!Array.isArray(db.ipBans)) db.ipBans = [];
+  if (!db.invites || typeof db.invites !== 'object' || Array.isArray(db.invites)) db.invites = {};
+  if (typeof db.settings.inviteOnly !== 'boolean') db.settings.inviteOnly = INVITE_DEFAULT;
   for (const u of Object.values(db.users)) if (u.rulesAgreed === undefined) u.rulesAgreed = 0; // existing members were here before the rules agreement
   syncServerName();
 }
@@ -181,12 +187,33 @@ function publicUser(u) {
   return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0, tag: u.tag && (u.tags || []).some((t) => (OLD_TAG_IDS[t] || t) === (OLD_TAG_IDS[u.tag] || u.tag)) ? (OLD_TAG_IDS[u.tag] || u.tag) : null };
 }
 
+/* ------------------------------------------------------------------ IP bans
+   The Owner can ban a person's IP address(es). Anyone visiting from a banned address only sees a
+   "this site has been deleted" page. (Shared networks and VPNs mean an IP is not a perfect identity.) */
+
+function clientIp(req) {
+  const xf = String((req.headers && req.headers['x-forwarded-for']) || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return String(xf.length ? xf[xf.length - 1] : (req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '').slice(0, 64);
+}
+const ipBanned = (ip) => !!ip && Array.isArray(db.ipBans) && db.ipBans.some((b) => b.ip === ip);
+const DELETED_TEXT = 'This site has been deleted.';
+const DELETED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Site deleted</title><style>html,body{height:100%;margin:0}body{display:grid;place-content:center;gap:10px;text-align:center;background:#fff;color:#222;font:18px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:24px}h1{font-size:28px;margin:0}p{margin:0;color:#666}</style></head><body><h1>This site has been deleted.</h1></body></html>`;
+// Remember the addresses a person uses (a few, newest last) so the Owner can ban them.
+function noteIp(user, ip) {
+  if (!user || !ip) return;
+  if (!Array.isArray(user.ips)) user.ips = [];
+  if (user.ips[user.ips.length - 1] === ip) return;
+  user.ips = user.ips.filter((x) => x !== ip).concat(ip).slice(-6);
+  save();
+}
+
 function auth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   const userId = db.sessions[token];
   const user = userId && db.users[userId];
   if (!user) return res.status(401).json({ error: 'Not signed in' });
+  noteIp(user, clientIp(req));
   req.user = user;
   req.token = token;
   next();
@@ -225,7 +252,7 @@ function broadcastChannel(channelId, payload) {
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://x');
-  if (url.pathname !== '/ws') return socket.destroy();
+  if (url.pathname !== '/ws' || ipBanned(clientIp(req))) return socket.destroy();
   const userId = db.sessions[url.searchParams.get('token')];
   if (!userId || !db.users[userId]) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => {
@@ -398,6 +425,12 @@ function disconnectUser(userId) {
 /* ------------------------------------------------------------------ http */
 
 app.disable('x-powered-by');
+// Banned addresses see a "deleted" page everywhere and cannot use the API.
+app.use((req, res, next) => {
+  if (!ipBanned(clientIp(req))) return next();
+  if (req.path.startsWith('/api/')) return res.status(403).json({ error: DELETED_TEXT });
+  res.status(410).set('Content-Type', 'text/html; charset=utf-8').send(DELETED_PAGE);
+});
 // Hosts put a proxy in front of the app; trust it so rate limits see each visitor's real IP.
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '8mb' }));
@@ -408,10 +441,17 @@ app.use((req, res, next) => {
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d', index: false }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+/* ------------------------------------------------------------------ invites (the site is invite only)
+   New people need a code from the Owner to sign up. Each invite has a use limit and can expire. */
+const normInvite = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 24);
+const inviteDead = (i) => (i.expiresAt && Date.now() >= i.expiresAt) || i.uses >= i.maxUses;
+const inviteView = (i) => ({ code: i.code, maxUses: i.maxUses, uses: i.uses, usedBy: i.usedBy, expiresAt: i.expiresAt, note: i.note || '', createdAt: i.createdAt, by: i.by });
+const inviteList = () => Object.values(db.invites).sort((a, b) => b.createdAt - a.createdAt).map(inviteView);
+
 const USERNAME_RE = /^[A-Za-z0-9_.\- ]{2,24}$/;
 
 app.get('/api/status', (req, res) => {
-  res.json({ hasUsers: Object.keys(db.users).length > 0, serverName: db.serverName, registrationOpen: db.settings.registrationOpen });
+  res.json({ hasUsers: Object.keys(db.users).length > 0, serverName: db.serverName, registrationOpen: db.settings.registrationOpen, inviteOnly: !!db.settings.inviteOnly });
 });
 
 const RULES_VERSION = 1;
@@ -440,6 +480,11 @@ app.post('/api/register', async (req, res) => {
     const lower = username.toLowerCase();
     const isWarmaster = lower === 'warmaster'; // signing up with this name makes you the Owner
     if (!db.settings.registrationOpen && !isWarmaster && Object.keys(db.users).length > 0) return res.status(403).json({ error: 'Sign-ups are closed right now. Ask the Owner for access.' });
+    const invite = db.settings.inviteOnly && !isWarmaster && Object.keys(db.users).length > 0 ? db.invites[normInvite(req.body.inviteCode)] : null;
+    if (db.settings.inviteOnly && !isWarmaster && Object.keys(db.users).length > 0) {
+      if (!normInvite(req.body.inviteCode)) return res.status(403).json({ error: 'This site is invite only. Ask the Owner for an invite link or code.' });
+      if (!invite || inviteDead(invite)) return res.status(403).json({ error: 'That invite code does not work (it may be wrong, used up or expired).' });
+    }
     if (Object.values(db.users).some((u) => u.username.toLowerCase() === lower)) return res.status(409).json({ error: 'That username is taken' });
 
     const salt = uid(16);
@@ -447,6 +492,7 @@ app.post('/api/register', async (req, res) => {
 
     // Re-check after the async hash so two simultaneous sign-ups can never both become admin.
     if (Object.values(db.users).some((u) => u.username.toLowerCase() === lower)) return res.status(409).json({ error: 'That username is taken' });
+    if (invite && inviteDead(invite)) return res.status(403).json({ error: 'That invite code was just used up.' });
     const first = isWarmaster;
     const user = {
       id: uid(6), username, salt, hash,
@@ -456,8 +502,9 @@ app.post('/api/register', async (req, res) => {
       rulesAgreed: RULES_VERSION, rulesAgreedAt: Date.now(),
     };
     db.users[user.id] = user;
+    if (invite) { invite.uses++; invite.usedBy.push(user.username); user.invitedBy = invite.by; }
     const token = uid(32);
-    db.sessions[token] = user.id;
+    db.sessions[token] = user.id; noteIp(user, clientIp(req));
     save();
     broadcast({ t: 'members' });
     res.json({ token, firstUser: first });
@@ -476,7 +523,7 @@ app.post('/api/login', async (req, res) => {
     const hash = await hashPassword(password, user ? user.salt : 'x'.repeat(32));
     if (!user || !safeEqual(hash, user.hash)) return res.status(401).json({ error: 'Wrong username or password' });
     const token = uid(32);
-    db.sessions[token] = user.id;
+    db.sessions[token] = user.id; noteIp(user, clientIp(req));
     save();
     res.json({ token });
   } catch (e) {
@@ -1389,10 +1436,27 @@ app.delete('/api/owner/reports/:id', auth, ownerOnly, (req, res) => {
   db.reports = db.reports.filter((x) => x.id !== req.params.id); save(); res.json({ ok: true });
 });
 
+app.get('/api/owner/invites', auth, ownerOnly, (req, res) => res.json({ invites: inviteList(), inviteOnly: !!db.settings.inviteOnly }));
+app.post('/api/owner/invites', auth, ownerOnly, (req, res) => {
+  const code = crypto.randomBytes(5).toString('hex').toUpperCase();
+  const mins = clampNum(req.body.expiresIn, 0, 60 * 24 * 365, 0);
+  db.invites[code] = { code, maxUses: clampNum(req.body.maxUses, 1, 1000, 1), uses: 0, usedBy: [], expiresAt: mins ? Date.now() + mins * 60000 : 0, note: String(req.body.note || '').trim().slice(0, 40), createdAt: Date.now(), by: req.user.username };
+  audit(req.user, `made invite ${code}${db.invites[code].note ? ' for ' + db.invites[code].note : ''}`);
+  save();
+  res.json({ ok: true, code, invites: inviteList() });
+});
+app.delete('/api/owner/invites/:code', auth, ownerOnly, (req, res) => {
+  const code = normInvite(req.params.code);
+  if (!db.invites[code]) return res.status(404).json({ error: 'No such invite' });
+  delete db.invites[code]; audit(req.user, 'deleted invite ' + code); save();
+  res.json({ ok: true, invites: inviteList() });
+});
+
 app.get('/api/owner/overview', auth, ownerOnly, (req, res) => {
   const users = Object.values(db.users);
   res.json({
     registrationOpen: db.settings.registrationOpen,
+    inviteOnly: !!db.settings.inviteOnly,
     welcomeText: db.settings.welcomeText,
     admins: users.filter((u) => u.roleId === 'admin').map((u) => ({ id: u.id, username: u.username, online: online.has(u.id) })),
     members: users.length,
@@ -1408,6 +1472,10 @@ app.put('/api/owner/settings', auth, ownerOnly, (req, res) => {
   if (typeof req.body.registrationOpen === 'boolean') {
     db.settings.registrationOpen = req.body.registrationOpen;
     audit(req.user, req.body.registrationOpen ? 'opened sign-ups' : 'closed sign-ups');
+  }
+  if (typeof req.body.inviteOnly === 'boolean') {
+    db.settings.inviteOnly = req.body.inviteOnly;
+    audit(req.user, req.body.inviteOnly ? 'turned invite-only on' : 'turned invite-only off');
   }
   if (typeof req.body.welcomeText === 'string') {
     const t = req.body.welcomeText.trim().slice(0, 120);
@@ -1920,6 +1988,66 @@ app.post('/api/codes/redeem', auth, (req, res) => {
   audit(u, `redeemed the code ${c.code}`);
   save();
   res.json({ ok: true, message: 'You got ' + got.join(' and ') + '!', tag: tagInfo, reward: { coins: c.coins, tag: tag ? { id: tag.id, name: tag.name, icon: tag.icon, rarity: tag.rarity } : null, duplicate: dup, refund: back }, ...economyFor(u) });
+});
+
+/* ------------------------------------------------------- voice connection servers (STUN/TURN)
+   Phones and strict networks often cannot connect straight to each other. A TURN "relay" fixes that.
+   Set TURN_URLS (comma separated), TURN_USERNAME and TURN_CREDENTIAL on the host, OR METERED_APP and METERED_API_KEY
+   (a free account at metered.ca). Without them, voice only works when the network allows direct connections. */
+const STUN_ONLY = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+let iceCache = { at: 0, servers: null };
+async function iceServers() {
+  if (iceCache.servers && Date.now() - iceCache.at < 10 * 60 * 1000) return iceCache.servers;
+  let servers = STUN_ONLY.slice();
+  try {
+    if (process.env.METERED_APP && process.env.METERED_API_KEY) {
+      const r = await fetch(`https://${encodeURIComponent(process.env.METERED_APP)}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(process.env.METERED_API_KEY)}`);
+      const list = r.ok ? await r.json() : null;
+      if (Array.isArray(list) && list.length) servers = servers.concat(list);
+    }
+    if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+      servers.push({ urls: process.env.TURN_URLS.split(',').map((x) => x.trim()).filter(Boolean), username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+    }
+  } catch (e) { console.log('Could not load TURN servers:', e.message); }
+  iceCache = { at: Date.now(), servers };
+  return servers;
+}
+app.get('/api/ice', auth, async (req, res) => {
+  const servers = await iceServers();
+  res.json({ iceServers: servers, relay: servers.some((x) => [].concat(x.urls).some((u) => /^turns?:/.test(u))) });
+});
+
+const ipBanView = () => db.ipBans.slice().sort((a, b) => b.ts - a.ts).map((b) => ({ id: b.id, ip: b.ip, username: b.username, ts: b.ts, by: b.by }));
+
+app.get('/api/owner/ipbans', auth, ownerOnly, (req, res) => res.json({ bans: ipBanView(), known: Object.values(db.users).filter((u) => (u.ips || []).length).length }));
+
+app.post('/api/owner/ipban', auth, ownerOnly, (req, res) => {
+  const t = db.users[String(req.body.userId || '')];
+  if (!t) return res.status(404).json({ error: 'No such member' });
+  if (isOwner(t)) return res.status(400).json({ error: 'You cannot ban yourself' });
+  if (!Array.isArray(t.ips) || !t.ips.length) return res.status(400).json({ error: `No IP address is saved for ${t.username} yet. It is saved the next time they use the site` });
+  const mine = new Set([...(req.user.ips || []), clientIp(req)]);
+  const ips = t.ips.filter((ip) => !mine.has(ip));
+  if (!ips.length) return res.status(400).json({ error: `${t.username} uses the same network as you (${t.ips[t.ips.length - 1]}). Banning it would lock you out too` });
+  let added = 0;
+  for (const ip of ips) if (!ipBanned(ip)) { db.ipBans.push({ id: uid(6), ip, username: t.username, ts: Date.now(), by: req.user.username }); added++; }
+  for (const [tok, id] of Object.entries(db.sessions)) if (id === t.id) delete db.sessions[tok];
+  disconnectUser(t.id);
+  const name = t.username;
+  if (req.body.deleteAccount === true) { delete db.users[t.id]; }
+  audit(req.user, `IP-banned ${name} (${ips.length} address${ips.length === 1 ? '' : 'es'})${req.body.deleteAccount === true ? ' and deleted the account' : ''}`);
+  save();
+  broadcast({ t: 'members' });
+  res.json({ ok: true, added, skipped: t.ips.length - ips.length, bans: ipBanView() });
+});
+
+app.delete('/api/owner/ipbans/:id', auth, ownerOnly, (req, res) => {
+  const b = db.ipBans.find((x) => x.id === req.params.id);
+  if (!b) return res.status(404).json({ error: 'No such ban' });
+  db.ipBans = db.ipBans.filter((x) => x.id !== b.id);
+  audit(req.user, `lifted the IP ban on ${b.username}`);
+  save();
+  res.json({ ok: true, bans: ipBanView() });
 });
 
 /* ---------------------------------------------------- surprise (a random cool event) */

@@ -124,7 +124,7 @@ function applyHalloween() {
   if (!on) { if (old) old.remove(); return; }
   if (had && old) return;
   const deco = h('div', { id: 'hwDeco', 'aria-hidden': 'true' },
-    h('div', { class: 'hw-web tl' }), h('div', { class: 'hw-web tr' }), h('div', { class: 'hw-moon' }),
+    h('div', { class: 'hw-web tl' }), h('div', { class: 'hw-web tr' }),
     [0, 1, 2, 3, 4, 5].map((i) => h('span', { class: 'hw-bat', style: `top:${6 + i * 11}%;animation-duration:${16 + i * 3}s;animation-delay:${-i * 4.5}s;font-size:${18 + (i % 3) * 8}px` }, '🦇')),
     [0, 1, 2].map((i) => h('span', { class: 'hw-ghost', style: `left:${14 + i * 30}%;animation-delay:${-i * 2.3}s` }, '👻')));
   document.body.append(deco);
@@ -219,6 +219,7 @@ function setAuthMode(reg, hasUsers) {
   } else note.classList.add('hidden');
   $('authErr').textContent = '';
   $('authRulesWrap').classList.toggle('hidden', !reg);
+  $('authInviteWrap').classList.toggle('hidden', !(reg && state.inviteOnly && hasUsers !== false));
   if (reg) {
     $('authAgree').checked = false;
     $('authBtn').disabled = true;
@@ -231,8 +232,10 @@ async function showAuth() {
   $('auth').classList.remove('hidden');
   let status = { hasUsers: true };
   try { status = await (await fetch('/api/status')).json(); } catch (e) { /* keep default */ }
-  state.hasUsers = status.hasUsers;
-  setAuthMode(!status.hasUsers, status.hasUsers);
+  state.hasUsers = status.hasUsers; state.inviteOnly = !!status.inviteOnly;
+  const link = new URLSearchParams(location.search).get('invite');
+  if (link && state.inviteOnly) $('authInvite').value = link.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 24);
+  setAuthMode(!status.hasUsers || !!link, status.hasUsers);
   $('authSwitch').onclick = (e) => { e.preventDefault(); setAuthMode(!registerMode, state.hasUsers); };
 }
 
@@ -245,7 +248,7 @@ $('authForm').addEventListener('submit', async (e) => {
     const res = await fetch('/api/' + (registerMode ? 'register' : 'login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: $('authUser').value, password: $('authPass').value, agreeRules: registerMode ? $('authAgree').checked : undefined }),
+      body: JSON.stringify({ username: $('authUser').value, password: $('authPass').value, agreeRules: registerMode ? $('authAgree').checked : undefined, inviteCode: registerMode ? $('authInvite').value : undefined }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Something went wrong');
@@ -2120,6 +2123,8 @@ async function openOwnerPanel() {
     attempt(async () => { await api(`/users/${promoteSel.value}/role`, 'PUT', { roleId: 'admin' }); await refresh(); reopen(); });
   } }, 'Make Admin');
 
+  const inviteOnlyBox = h('input', { type: 'checkbox', checked: data.inviteOnly !== false });
+  inviteOnlyBox.addEventListener('change', () => attempt(async () => { await api('/owner/settings', 'PUT', { inviteOnly: inviteOnlyBox.checked }); toast2(inviteOnlyBox.checked ? 'Invite only is on' : 'Anyone can sign up now'); }));
   const open = h('input', { type: 'checkbox', checked: data.registrationOpen });
   open.addEventListener('change', () => attempt(async () => { await api('/owner/settings', 'PUT', { registrationOpen: open.checked }); toast2(open.checked ? 'Sign-ups are open' : 'Sign-ups are closed'); }));
   const welcome = h('input', { type: 'text', value: data.welcomeText, maxlength: 120 });
@@ -2254,6 +2259,7 @@ async function openOwnerPanel() {
       h('div', { class: 'note' }, 'Backups hold accounts, roles, chats, coins and tags. Uploaded pictures are not included.')),
     h('section', {}, h('h4', {}, 'Sign-ups & welcome'),
       h('label', { class: 'own-check' }, open, ' Allow new people to register'),
+      h('label', { class: 'own-check' }, inviteOnlyBox, ' Invite only (new people need an invite code from you)'),
       h('div', { class: 'own-add' }, welcome,
         h('button', { class: 'btn small', onclick: () => attempt(async () => { await api('/owner/settings', 'PUT', { welcomeText: welcome.value }); toast2('Welcome message saved'); }) }, 'Save')),
       h('div', { class: 'note' }, 'Use {name} for the new member’s name. Shown to everyone when a brand-new person joins.')),
@@ -2654,6 +2660,52 @@ function ownerExtras(data, reopen) {
 
   const rank = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4, croma: 5 };
 
+
+  const voiceBox = h('div', { class: 'note' }, 'Checking…');
+  api('/ice').then((r) => { voiceBox.className = 'note ' + (r.relay ? 'store-ok' : 'store-bad'); voiceBox.textContent = r.relay ? '✔ A relay server is set up. Voice and calls work even on phones and strict networks.' : '⚠ No relay server. Voice only works when both people’s networks allow direct connections, so some friends (phones, school or work Wi-Fi) may not hear each other.'; }).catch(() => { voiceBox.textContent = 'Could not check.'; });
+  const voiceSection = h('section', {}, h('h4', {}, '🎙️ Voice'), voiceBox,
+    h('div', { class: 'note' }, 'To add a relay: make a free account at metered.ca (it gives you an app name and an API key), then add two settings on Render under Environment: METERED_APP (your app name) and METERED_API_KEY. Redeploy and this turns green. You can also use your own TURN server with TURN_URLS, TURN_USERNAME and TURN_CREDENTIAL.'));
+
+  const invBox = h('div', {});
+  const invUses = h('select', { 'aria-label': 'People who can use it' }, [[1, '1 person'], [3, '3 people'], [5, '5 people'], [10, '10 people'], [50, '50 people']].map(([v, l]) => h('option', { value: v }, l)));
+  const invExp = h('select', { 'aria-label': 'Ends' }, [[0, 'Never ends'], [60, 'In 1 hour'], [1440, 'In 1 day'], [10080, 'In 7 days']].map(([v, l]) => h('option', { value: v }, l)));
+  const invNote = h('input', { type: 'text', maxlength: 40, placeholder: 'Who is it for? (optional)', 'aria-label': 'Note' });
+  const invLink = (code) => location.origin + location.pathname.replace(/index\.html$/, '') + '?invite=' + code;
+  const copy = (text, what) => { try { navigator.clipboard.writeText(text).then(() => toast2(what + ' copied')).catch(() => toast(text)); } catch (e) { toast(text); } };
+  const drawInv = (list) => invBox.replaceChildren(...(list.length ? list.map((i) => {
+    const dead = (i.expiresAt && i.expiresAt <= Date.now()) || i.uses >= i.maxUses;
+    return h('div', { class: 'code-item' },
+      h('div', {}, h('b', {}, i.code), h('small', {}, `${i.note ? i.note + ' · ' : ''}${i.uses}/${i.maxUses} used${i.usedBy.length ? ' (' + i.usedBy.join(', ') + ')' : ''}${dead ? ' · finished' : i.expiresAt ? ' · ends ' + new Date(i.expiresAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}`)),
+      h('span', {}, h('button', { type: 'button', class: 'btn small', onclick: () => copy(invLink(i.code), 'Invite link') }, 'Copy link'), ' ',
+        h('button', { type: 'button', class: 'btn small ghost', onclick: () => attempt(async () => { drawInv((await api('/owner/invites/' + encodeURIComponent(i.code), 'DELETE')).invites); }) }, 'Delete')));
+  }) : [h('div', { class: 'note' }, 'No invites yet. Make one and send the link to your friend.')]));
+  api('/owner/invites').then((r) => drawInv(r.invites)).catch(() => {});
+  const invSection = h('section', {}, h('h4', {}, '✉️ Invites'),
+    h('div', { class: 'note' }, 'The site is invite only: new people need an invite to sign up. Make an invite, copy the link and send it to your friend. People who already have an account are not affected.'),
+    h('div', { class: 'code-form' }, h('label', {}, 'Can be used by', invUses), h('label', {}, 'Ends', invExp), h('label', { class: 'wide' }, 'Note', invNote)),
+    h('button', { type: 'button', class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => {
+      const r = await api('/owner/invites', 'POST', { maxUses: Number(invUses.value), expiresIn: Number(invExp.value), note: invNote.value }); invNote.value = ''; drawInv(r.invites); copy(invLink(r.code), 'Invite link');
+    }) }, 'Make invite'),
+    invBox);
+
+  const ipBox = h('div', {});
+  const ipSel = h('select', { 'aria-label': 'Member to IP ban' }, h('option', { value: '' }, 'Choose a member…'), state.users.filter((u) => u.id !== state.me).map((u) => h('option', { value: u.id }, u.username)));
+  const ipDel = h('input', { type: 'checkbox' });
+  const drawBans = (list) => ipBox.replaceChildren(...(list.length ? list.map((b) => h('div', { class: 'code-item' },
+    h('div', {}, h('b', {}, b.username), h('small', {}, `${b.ip} · ${fmtStamp(b.ts)}`)),
+    h('button', { type: 'button', class: 'btn small', onclick: () => attempt(async () => { drawBans((await api('/owner/ipbans/' + encodeURIComponent(b.id), 'DELETE')).bans); toast2('Ban lifted'); }) }, 'Unban'))) : [h('div', { class: 'note' }, 'Nobody is IP banned.')]));
+  api('/owner/ipbans').then((r) => drawBans(r.bans)).catch(() => {});
+  const ipSection = h('section', {}, h('h4', {}, '🚫 IP ban'),
+    h('div', { class: 'note' }, 'Bans the internet address(es) a person has used. When they open the site they only see "This site has been deleted." They are signed out right away. Careful: people on the same Wi-Fi or network share an address, and a VPN or new network gets around it.'),
+    h('div', { class: 'own-add' }, ipSel, h('button', { type: 'button', class: 'btn primary small', onclick: async () => {
+      if (!ipSel.value) return toast('Choose a member first');
+      const name = userName(ipSel.value);
+      if (!(await confirmBox('IP ban ' + name + '?', `${name} will be signed out and their address will only see "This site has been deleted."${ipDel.checked ? ' Their account will also be deleted.' : ''}`, 'IP ban'))) return;
+      attempt(async () => { const r = await api('/owner/ipban', 'POST', { userId: ipSel.value, deleteAccount: ipDel.checked }); drawBans(r.bans); toast2(name + ' is IP banned'); await refresh(); reopen(); });
+    } }, 'IP ban')),
+    h('label', { class: 'own-check' }, ipDel, ' Also delete their account'),
+    ipBox);
+
   const codesBox = h('div', {});
   const cCode = h('input', { type: 'text', maxlength: 24, placeholder: 'Leave empty for a random one', 'aria-label': 'Code' });
   const cCoins = h('input', { type: 'number', min: 0, max: 1000000, value: 100, 'aria-label': 'Coins' });
@@ -2719,7 +2771,7 @@ function ownerExtras(data, reopen) {
     h('button', { class: 'btn primary small', style: 'margin:8px 0', onclick: () => { closeOverlay(); openTrollPanel(); } }, '🎭 Open Troll Panel'),
     h('button', { class: 'btn small', style: 'margin:8px 0 8px 8px', onclick: () => { closeOverlay(); openCommunityPanel(); } }, '🌟 Open Community Panel'),
     trollRows.length ? trollRows : h('div', { class: 'note' }, 'Nobody else is here yet.'));
-  return [surprise, codes, mg, troll];
+  return [invSection, surprise, codes, mg, troll, voiceSection, ipSection];
 }
 
 /* ---- new space: the Owner can limit it to some roles ---- */
@@ -2806,7 +2858,8 @@ async function joinVoice(room) {
     try {
       V.local = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
     } catch (e) { return toast('Could not use your microphone. Allow microphone access for this site and try again.'); }
-    V.room = room; V.muted = false; V.deaf = false;
+    try { const r = await api('/ice'); V.ice = { iceServers: r.iceServers }; V.relay = !!r.relay; } catch (e) { V.ice = ICE; V.relay = false; }
+    V.room = room; V.muted = false; V.deaf = false; V.blocked = false;
     watchLevel('me', V.local);
     wsSend({ t: 'voice-join', room });
     renderVoice();
@@ -2842,8 +2895,8 @@ async function setLocal(pc) {
 
 function makePeer(id) {
   if (V.peers.has(id)) return V.peers.get(id);
-  const pc = new RTCPeerConnection(ICE);
-  const peer = { pc, audio: null, video: null, queue: [], polite: String(state.me) < String(id), makingOffer: false, ignoreOffer: false, screenSender: null };
+  const pc = new RTCPeerConnection(V.ice || ICE);
+  const peer = { state: 'connecting', pc, audio: null, video: null, queue: [], polite: String(state.me) < String(id), makingOffer: false, ignoreOffer: false, screenSender: null };
   V.peers.set(id, peer);
   V.local.getTracks().forEach((t) => pc.addTrack(t, V.local));
   if (V.screen) addScreenTrack(peer);
@@ -2861,10 +2914,21 @@ function makePeer(id) {
       document.body.append(peer.audio); peer.audio.hidden = true;
     }
     peer.audio.srcObject = e.streams[0];
-    peer.audio.play().catch(() => {});
+    peer.audio.play().catch(() => { V.blocked = true; renderVoice(); });
     watchLevel(id, e.streams[0]);
   };
-  pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') { toast('Voice connection to ' + ((userById(id) || {}).username || 'someone') + ' failed (a strict network may block it)'); dropPeer(id); } };
+  const peerName = () => (userById(id) || {}).username || 'someone';
+  pc.onconnectionstatechange = () => {
+    const st = pc.connectionState; peer.state = st;
+    if (st === 'connected') { clearTimeout(peer.timer); peer.warned = false; }
+    if (st === 'disconnected') setTimeout(() => { if (V.peers.get(id) === peer && pc.connectionState === 'disconnected') { try { pc.restartIce(); } catch (e) { /* closed */ } } }, 3000);
+    if (st === 'failed') {
+      try { pc.restartIce(); } catch (e) { /* closed */ }
+      if (!peer.warned) { peer.warned = true; toast(`Cannot connect your voice to ${peerName()}. One of your networks blocks direct voice.` + (V.relay ? '' : ' The Owner can fix this by adding a relay server (Owner Panel > Voice).')); }
+    }
+    renderVoice();
+  };
+  peer.timer = setTimeout(() => { if (V.peers.get(id) === peer && pc.connectionState !== 'connected' && !peer.warned) { peer.warned = true; peer.state = 'failed'; toast(`Still cannot connect to ${peerName()}…` + (V.relay ? ' Try leaving and joining again.' : ' Their network may block direct voice. The Owner can add a relay server (Owner Panel > Voice).')); renderVoice(); } }, 15000);
   pc.onnegotiationneeded = async () => {
     try {
       peer.makingOffer = true;
@@ -2873,6 +2937,7 @@ function makePeer(id) {
     } catch (e) { /* peer left */ }
     finally { peer.makingOffer = false; }
   };
+  renderVoice();
   return peer;
 }
 
@@ -2901,7 +2966,7 @@ async function onVoiceSignal(from, data) {
 function dropPeer(id) {
   const p = V.peers.get(id);
   if (!p) return;
-  V.peers.delete(id);
+  V.peers.delete(id); clearTimeout(p.timer);
   p.pc.onicecandidate = p.pc.ontrack = p.pc.onconnectionstatechange = p.pc.onnegotiationneeded = null;
   try { p.pc.close(); } catch (e) { /* already closed */ }
   if (p.audio) { p.audio.srcObject = null; p.audio.remove(); }
@@ -3009,6 +3074,16 @@ setInterval(() => {
   }
 }, 150);
 
+// Browsers (Safari especially) can block call audio until the page is touched. Any tap or key press turns it on.
+function unlockAudio() {
+  if (!V.room) return;
+  let any = false;
+  V.peers.forEach((p) => { if (p.audio && p.audio.srcObject && p.audio.paused) { any = true; p.audio.play().then(() => {}).catch(() => {}); } });
+  for (const c of [V.ctx, audioCtx]) if (c && c.state === 'suspended') c.resume().catch(() => {});
+  if (V.blocked && (any || !V.peers.size || [...V.peers.values()].every((p) => !p.audio || !p.audio.paused))) { V.blocked = false; renderVoice(); }
+}
+['click', 'touchstart', 'keydown'].forEach((ev) => document.addEventListener(ev, unlockAudio, { passive: true }));
+
 function renderVoice() {
   const list = $('voiceList'), bar = $('voiceBar');
   if (!list || !state.voiceChannels) return;
@@ -3034,13 +3109,15 @@ function renderVoice() {
   if (V.room) {
     const dmWith = callPeer(V.room), c = dmWith ? { name: 'Call with ' + userName(dmWith) } : state.voiceChannels.find((x) => x.id === V.room);
     const alone = dmWith && !(((state.voice || {})[V.room]) || []).some((p) => p.userId !== state.me);
+    const peers = [...V.peers.values()], linking = peers.length && !peers.some((p) => p.state === 'connected'), broken = peers.length && peers.every((p) => p.state === 'failed');
     const vb = (cls, icon, label, title, fn) => h('button', { class: 'vbtn ' + cls, title, onclick: fn }, h('span', { class: 'vb-ico' }, icon), h('span', { class: 'vb-lbl' }, label));
     bar.replaceChildren(
-      h('div', { class: 'vb-info' }, h('div', { class: 'vb-state' }, h('i', { class: 'pulse' }), alone ? 'Calling…' : dmWith ? 'In a call' : 'Voice connected'), h('div', { class: 'vb-room' }, c ? (dmWith ? '📞 ' : '🔊 ') + c.name : '')),
+      h('div', { class: 'vb-info' }, h('div', { class: 'vb-state' }, h('i', { class: 'pulse' }), alone ? 'Calling…' : broken ? '⚠ Cannot connect' : linking ? 'Connecting…' : dmWith ? 'In a call' : 'Voice connected'), h('div', { class: 'vb-room' }, c ? (dmWith ? '📞 ' : '🔊 ') + c.name : '')),
       h('div', { class: 'vb-btns' },
         vb(V.muted ? 'off' : '', V.muted ? '🔇' : '🎤', V.muted ? 'Unmute' : 'Mute', V.muted ? 'You are muted. Click to turn your microphone back on' : 'Turn your microphone off', () => setVoiceState(!V.muted, V.deaf && V.muted ? false : V.deaf)),
         vb(V.deaf ? 'off' : '', V.deaf ? '🙉' : '🎧', V.deaf ? 'Hear' : 'Deafen', V.deaf ? 'You cannot hear anyone. Click to hear again' : 'Stop hearing everyone (also mutes you)', () => setVoiceState(!V.deaf, !V.deaf)),
         canShare() ? vb(V.screen ? 'live' : '', '🖥', V.screen ? 'Stop' : 'Share', V.screen ? 'You are sharing your screen. Click to stop' : 'Share your screen with everyone in this channel', () => (V.screen ? stopShare() : startShare())) : null,
+        V.blocked ? vb('live', '🔊', 'Tap to hear', 'Your browser is blocking sound. Tap to turn it on', () => unlockAudio()) : null,
         vb('leave', '📞', dmWith ? 'Hang up' : 'Leave', dmWith ? 'End the call' : 'Disconnect from this voice channel', () => leaveVoice())));
   }
 }
