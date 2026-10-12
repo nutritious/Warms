@@ -13,6 +13,9 @@ services:
     envVars:
       - key: DATA_DIR
         value: /data
+      # Optional but recommended on hosts without a permanent disk: a free Postgres database (Neon, Supabase...) keeps all data across updates.
+      - key: DATABASE_URL
+        sync: false
       # Optional: also email problem reports to the Owner. Reports always appear in the Owner Panel even without this.
       - key: SMTP_HOST
         value: smtp.mail.me.com

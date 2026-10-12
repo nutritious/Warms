@@ -58,4 +58,8 @@ module.exports = [
     'Only the Owner can add, edit or delete entries',
     'Safer updates: the site now saves everything just before it restarts',
   ] },
+  { id: 'v13', date: '2026-10-11', title: 'Updates no longer erase everything', notes: [
+    'Warms can now keep all its data (accounts, chats, coins, tags, pictures) in a free external database, so updates do not sign anyone out or wipe anything',
+    'The Owner Panel shows where your data is saved',
+  ] },
 ];

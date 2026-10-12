@@ -1986,7 +1986,7 @@ async function openOwnerPanel() {
       h('div', { class: 'note' }, 'Use a minus number (like -100) to take coins away.')),
     h('section', {}, h('h4', {}, '💾 Save & restore'),
       h('div', { class: 'note ' + (st.persistent ? 'store-ok' : 'store-bad') }, st.persistent
-        ? '✔ Your data is on a permanent disk. Updates will not erase it.'
+        ? (st.database ? '✔ Your data is saved in an external database. Updates will not erase it.' : '✔ Your data is on a permanent disk. Updates will not erase it.')
         : '⚠ Temporary storage! Every update to the site ERASES accounts, chats and coins. Add a Render disk (see the guide) or download a backup before each update and restore it after.'),
       h('div', { class: 'own-add' },
         h('button', { class: 'btn small', onclick: () => attempt(async () => {

@@ -93,7 +93,7 @@ Video and screen sharing, direct messages, and password reset (an Owner or Admin
 
 Everyone gets a free spin of the Daily Wheel every 24 hours (click the 🪙 coin chip by your name). Coins are play money only. Spend 100 coins in the Halloween cauldron (Tag Machine) for a random profile tag, then wear one from "My Tags" and it shows next to your name.
 
-Tag odds per roll: Common 60%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%. A duplicate gives some coins back. Owner and Admins can use the console command `givecoins <user> <amount>`. Odds and tags live at the top of the "coins, wheel, tags" section in `server.js`.
+Tag odds per roll: Common 60%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%. A duplicate gives some coins back. Owner and Admins can use the console command `givecoins <user> <amount>`. Odds and tags live at the top of the "coins, wheel, tags" section in `server-main.js`.
 
 The Owner Panel has a **Give coins** box (pick a member, type an amount; a minus number takes coins away). The console command `givecoins <user> <amount>` still works too.
 
@@ -103,7 +103,7 @@ Accounts, chats and coins live in `db.json` inside the data folder. On Render th
 
 ## Shop, packs and events
 
-The coin chip is now the **Shop** button. It has the Daily Wheel, **Tag Packs** (Halloween, Dog, Space and Ocean, 15 tags each) and **My Tags**. Rarities per pack: Common 59.9%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%, **Croma 0.1%** (animated rainbow). Packs, tags and odds are defined at the top of the "coins, wheel, tags" section in `server.js`; adding a pack means adding one block of 15 tags.
+The coin chip is now the **Shop** button. It has the Daily Wheel, **Tag Packs** (Halloween, Dog, Space and Ocean, 15 tags each) and **My Tags**. Rarities per pack: Common 59.9%, Uncommon 25%, Rare 10%, Epic 4%, Legendary 1%, **Croma 0.1%** (animated rainbow). Packs, tags and odds are defined at the top of the "coins, wheel, tags" section in `server-main.js`; adding a pack means adding one block of 15 tags.
 
 The Owner Panel has an **Events** section: Lucky Hour (rare chances x2 to x10), Double Coins (wheel), Pack Sale, Coin Rain (coins for everyone) and Free Spin For All. Everyone gets a banner and a post in #announcements.
 
@@ -122,3 +122,7 @@ Open the **Command Center** (the ⚡ button) and use the **Give tags & coins** p
 ## Update Log
 
 The 📜 button on the far-left bar opens the Update Log: everyone can read it, only the Owner can add, edit or delete entries. Entries that ship with the code live in `changelog.js`. **Every update adds a new entry at the bottom of that file** (see CLAUDE.md); it shows up in the app after the update is deployed. The Owner can also type entries directly in the app.
+
+## Keeping your data without a paid disk (external database)
+
+If your host erases its disk on every update, set one environment variable, `DATABASE_URL`, to the connection string of a free Postgres database (for example from neon.tech). Warms then copies every save (accounts, chats, coins, tags, pictures) into that database and restores it on start. The Owner Panel's Save & restore section shows "saved in an external database". If the database can't be reached the site refuses to start rather than starting empty. `server.js` is only a small launcher; the chat itself is `server-main.js`.
