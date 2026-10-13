@@ -20,7 +20,7 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const PERMS = ['manage_roles', 'manage_channels', 'manage_users', 'delete_messages'];
 
 // New sites start invite only. (INVITE_ONLY=0 starts open, which the automated tests use.)
-const INVITE_DEFAULT = process.env.INVITE_ONLY !== '0';
+const INVITE_DEFAULT = process.env.INVITE_ONLY === '1'; // off by default; the Owner switches it in the Owner Panel
 
 function freshDb() {
   return {
@@ -111,6 +111,7 @@ for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
   if (!Array.isArray(db.ipBans)) db.ipBans = [];
   if (!db.invites || typeof db.invites !== 'object' || Array.isArray(db.invites)) db.invites = {};
   if (typeof db.settings.inviteOnly !== 'boolean') db.settings.inviteOnly = INVITE_DEFAULT;
+  if (!db.settings.inviteReset) { db.settings.inviteOnly = INVITE_DEFAULT; db.settings.inviteReset = true; } // one-time: invites start switched off after this update
   for (const u of Object.values(db.users)) if (u.rulesAgreed === undefined) u.rulesAgreed = 0; // existing members were here before the rules agreement
   syncServerName();
 }
@@ -480,8 +481,8 @@ app.post('/api/register', async (req, res) => {
     const lower = username.toLowerCase();
     const isWarmaster = lower === 'warmaster'; // signing up with this name makes you the Owner
     if (!db.settings.registrationOpen && !isWarmaster && Object.keys(db.users).length > 0) return res.status(403).json({ error: 'Sign-ups are closed right now. Ask the Owner for access.' });
-    const invite = db.settings.inviteOnly && !isWarmaster && Object.keys(db.users).length > 0 ? db.invites[normInvite(req.body.inviteCode)] : null;
-    if (db.settings.inviteOnly && !isWarmaster && Object.keys(db.users).length > 0) {
+    const invite = db.settings.inviteOnly && !isWarmaster ? db.invites[normInvite(req.body.inviteCode)] : null;
+    if (db.settings.inviteOnly && !isWarmaster) {
       if (!normInvite(req.body.inviteCode)) return res.status(403).json({ error: 'This site is invite only. Ask the Owner for an invite link or code.' });
       if (!invite || inviteDead(invite)) return res.status(403).json({ error: 'That invite code does not work (it may be wrong, used up or expired).' });
     }
