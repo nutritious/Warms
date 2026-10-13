@@ -307,6 +307,7 @@ async function refresh() {
   state.annIcon = data.annIcon || null;
   state.perks = data.perks || { troll: false, community: false };
   if (data.economy) takeEco(data.economy);
+  state.tour = !!data.tour; setCountdown(data.countdown);
   state.spaces = data.spaces || [{ id: 'main', name: data.serverName }];
   if (state.spaceId !== ANN_SPACE && !state.spaces.some((x) => x.id === state.spaceId)) state.spaceId = state.spaces[0].id;
   if (!state.channels.some((c) => c.id === state.channelId && (c.spaceId || state.spaces[0].id) === state.spaceId)) {
@@ -326,8 +327,9 @@ async function start() {
   loadFriends();
   loadUpdates();
   loadMinigame();
-  attempt(loadPolls);
+  attempt(loadPolls); attempt(loadQuests); attempt(loadWebGames);
   playIntro();
+  if (state.tour) setTimeout(() => openTour(true), 3000);
   connectWs();
   $('msgInput').focus();
 }
@@ -394,7 +396,14 @@ function connectWs() {
       else if (m.kind === 'start') { toast2('🎮 A minigame started! Look for the 🎮 button'); }
       attempt(loadMinigame);
     } else if (m.t === 'poll') {
-      attempt(loadPolls);
+      attempt(async () => { await loadPolls(); if (m.fresh) pollPopup(m.id); });
+    } else if (m.t === 'quest') {
+      for (const d of m.done || []) { toast2(`📋 Quest done: ${d.text}  +${d.reward} 🪙`); }
+      uiSound('win'); popConfetti(); attempt(async () => { await loadQuests(); await refreshEco(); });
+    } else if (m.t === 'countdown') {
+      attempt(async () => { setCountdown((await api('/countdown')).countdown); });
+    } else if (m.t === 'webgames') {
+      attempt(loadWebGames);
     } else if (m.t === 'welcome') {
       if (m.userId !== state.me) showBanner(m.username, m.text, 'NEW MEMBER', 'welcome');
       attempt(async () => { await refresh(); });
@@ -463,11 +472,18 @@ function renderChrome() {
     const ids = inSpace(sp2.id).map((c) => c.id);
     const un = ids.map((id) => state.unread[id]).filter(Boolean);
     const ping = un.some((x) => x.m);
-    return h('button', { class: 'rail-chat' + (sp2.id === state.spaceId ? ' active' : '') + (sp2.icon ? ' has-img' : ''), title: sp2.name, onclick: () => { closeDm(); switchSpace(sp2.id); } },
-      sp2.icon ? h('img', { class: 'rail-img', src: sp2.icon, alt: '' }) : h('span', {}, sp2.system ? '🛡️' : spaceInitials(sp2.name)),
-      un.length ? h('i', { class: 'rail-dot' + (ping ? ' ping' : '') }) : null);
+    const canDel = isAdmin() && !sp2.system && sp2.id !== state.spaces[0].id;
+    return h('div', { class: 'rail-wrap' },
+      h('button', { class: 'rail-chat' + (sp2.id === state.spaceId ? ' active' : '') + (sp2.icon ? ' has-img' : ''), title: sp2.name, onclick: () => { closeDm(); switchSpace(sp2.id); } },
+        sp2.icon ? h('img', { class: 'rail-img', src: sp2.icon, alt: '' }) : h('span', {}, sp2.system ? '🛡️' : spaceInitials(sp2.name)),
+        un.length ? h('i', { class: 'rail-dot' + (ping ? ' ping' : '') }) : null),
+      canDel ? h('button', { type: 'button', class: 'rail-x', title: 'Delete ' + sp2.name, onclick: async (e) => {
+        e.stopPropagation();
+        if (await confirmBox('Delete ' + sp2.name + '?', 'Every chat and message in this space will be deleted for good.', 'Delete space')) attempt(async () => { await api('/spaces/' + sp2.id, 'DELETE'); await refresh(); toast2('Space deleted'); });
+      } }, '✕') : null);
   }));
   $('ownerBtn').classList.toggle('hidden', !isOwner());
+  $('railTour').classList.toggle('hidden', !isOwner()); // everyone else sees the tour once, then it is gone
   $('commBtn').classList.toggle('hidden', !(state.perks && state.perks.community));
   $('trollBtn').classList.toggle('hidden', !(state.perks && state.perks.troll));
   $('adminBtn').classList.toggle('hidden', !isAdmin());
@@ -2932,7 +2948,7 @@ function ownerExtras(data, reopen) {
     h('button', { class: 'btn primary small', style: 'margin:8px 0', onclick: () => { closeOverlay(); openTrollPanel(); } }, '🎭 Open Troll Panel'),
     h('button', { class: 'btn small', style: 'margin:8px 0 8px 8px', onclick: () => { closeOverlay(); openCommunityPanel(); } }, '🌟 Open Community Panel'),
     trollRows.length ? trollRows : h('div', { class: 'note' }, 'Nobody else is here yet.'));
-  return [invSection, surprise, codes, mg, pollMaker(), troll, voiceSection, ipSection];
+  return [invSection, surprise, codes, mg, pollMaker(), countdownMaker(), webGamesMaker(), troll, voiceSection, ipSection];
 }
 
 /* ---- new space: the Owner can limit it to some roles ---- */
@@ -3326,12 +3342,191 @@ function burstAt(el, emoji, n = 8) {
 }
 function popConfetti() { if (bouncyOn()) { const run = FX_RUN.confetti; if (run) run(); } }
 
+/* ------------------------------------------------------------------ v19: quests, sidebar box, poll pop-up, countdown, tour, web games */
+async function refreshEco() { try { const d = await api('/bootstrap'); if (d.economy) { takeEco(d.economy); renderCoins(); } } catch (e) { /* later */ } }
+
+/* ---- daily quests ---- */
+state.quests = null;
+const qLeft = (ms) => { const m = Math.max(1, Math.ceil(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`; };
+async function loadQuests() {
+  const q = await api('/quests'); q.at = Date.now(); state.quests = q;
+  const pending = q.quests.some((x) => !x.done);
+  for (const id of ['railQuestDot', 'headQuestDot']) $(id).classList.toggle('hidden', !pending);
+  renderSideBox();
+  if (document.getElementById('questList')) drawQuests();
+}
+function questRow(x) {
+  const pct = Math.round((x.progress / x.goal) * 100);
+  return h('div', { class: 'quest' + (x.done ? ' done' : '') },
+    h('div', { class: 'q-top' }, h('span', { class: 'q-t' }, (x.done ? '✅ ' : '') + x.text), h('span', { class: 'q-r' }, `+${x.reward} 🪙`)),
+    h('div', { class: 'q-bar' }, h('i', { style: `width:${pct}%` })),
+    h('div', { class: 'q-n' }, `${x.progress} / ${x.goal}`));
+}
+function drawQuests() {
+  const box = document.getElementById('questList'); if (!box || !state.quests) return;
+  const q = state.quests, doneN = q.quests.filter((x) => x.done).length;
+  box.replaceChildren(
+    h('div', { class: 'q-head' }, h('b', {}, `${doneN} / ${q.quests.length} done`), h('span', {}, `New quests in ${qLeft(q.resetsIn - (Date.now() - q.at))}`)),
+    ...q.quests.map(questRow),
+    h('div', { class: 'quest bonus' + (q.bonus.done ? ' done' : '') }, h('div', { class: 'q-top' }, h('span', { class: 'q-t' }, (q.bonus.done ? '🎉 ' : '🎁 ') + 'Finish all five'), h('span', { class: 'q-r' }, `+${q.bonus.reward} 🪙 bonus`))));
+}
+function openQuests() {
+  const box = h('div', { class: 'modal quests' },
+    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('h2', {}, '📋 Daily quests'),
+    h('p', { class: 'rw-sub' }, 'Chat, play and have fun. Coins are paid the moment you finish a quest. New quests every day.'),
+    h('div', { id: 'questList', class: 'quest-list' }));
+  openOverlay(box); drawQuests(); attempt(loadQuests);
+}
+$('railQuests').onclick = $('headQuests').onclick = openQuests;
+
+/* ---- the little box in the sidebar: the open poll and your quests ---- */
+function renderSideBox() {
+  const box = $('sideBox'); if (!box) return;
+  const kids = [];
+  const p = (state.polls || []).find((x) => x.open);
+  if (p) {
+    const showRes = !!p.mine;
+    kids.push(h('div', { class: 'sb-poll' },
+      h('div', { class: 'sb-title' }, '📊 ' + p.question),
+      ...p.options.map((o) => {
+        const pct = p.total ? Math.round((o.count / p.total) * 100) : 0;
+        return h('button', { type: 'button', class: 'sb-opt' + (p.mine === o.id ? ' mine' : ''), onclick: () => attempt(async () => { uiSound('pop'); await api(`/polls/${p.id}/vote`, 'POST', { option: o.id }); await loadPolls(); }) },
+          showRes ? h('i', { style: `width:${pct}%` }) : null, h('span', {}, (p.mine === o.id ? '✓ ' : '') + o.text), showRes ? h('small', {}, pct + '%') : null);
+      })));
+  }
+  const q = state.quests;
+  if (q) {
+    const doneN = q.quests.filter((x) => x.done).length;
+    kids.push(h('button', { type: 'button', class: 'sb-quests', onclick: openQuests }, h('span', {}, '📋 Daily quests'), h('b', {}, `${doneN}/${q.quests.length}`), h('i', { class: 'sb-qbar' }, h('u', { style: `width:${(doneN / q.quests.length) * 100}%` }))));
+  }
+  box.classList.toggle('hidden', !kids.length);
+  box.replaceChildren(...kids);
+}
+
+/* ---- the poll pop-up: shows for one minute like an announcement, for people who miss the 📊 button ---- */
+let pollPopTimer = null;
+function pollPopup(id) {
+  const old = document.getElementById('pollPop'); if (old) old.remove(); clearInterval(pollPopTimer);
+  const p = state.polls.find((x) => x.id === id); if (!p || !p.open || p.mine) return;
+  const END = Date.now() + 60000, bar = h('i', { class: 'pp-bar' }), sec = h('span', { class: 'pp-sec' }, '60s');
+  const pop = h('div', { id: 'pollPop', class: 'pollpop' }, h('div', { class: 'pp-head' }, h('b', {}, '📊 NEW POLL'), sec, h('button', { type: 'button', class: 'icon-btn', title: 'Dismiss', onclick: () => { clearInterval(pollPopTimer); pop.remove(); } }, '✕')),
+    h('div', { class: 'pp-q' }, p.question), h('div', { class: 'pp-opts' }), bar);
+  const paint = () => {
+    const cur = state.polls.find((x) => x.id === id) || p, voted = !!cur.mine;
+    pop.querySelector('.pp-opts').replaceChildren(...cur.options.map((o) => {
+      const pct = cur.total ? Math.round((o.count / cur.total) * 100) : 0;
+      return h('button', { type: 'button', class: 'sb-opt' + (cur.mine === o.id ? ' mine' : ''), disabled: !cur.open || null, onclick: () => attempt(async () => { uiSound('pop'); await api(`/polls/${id}/vote`, 'POST', { option: o.id }); await loadPolls(); paint(); }) },
+        voted ? h('i', { style: `width:${pct}%` }) : null, h('span', {}, (cur.mine === o.id ? '✓ ' : '') + o.text), voted ? h('small', {}, pct + '%') : null);
+    }));
+  };
+  paint(); document.body.append(pop); uiSound('pop');
+  pollPopTimer = setInterval(() => { const left = END - Date.now(); if (left <= 0) { clearInterval(pollPopTimer); pop.remove(); return; } sec.textContent = Math.ceil(left / 1000) + 's'; bar.style.width = (left / 600) + '%'; }, 250);
+}
+
+/* ---- Owner countdown bar ("Next update in 2d 3h...") ---- */
+state.countdown = null; let cdTimer = null;
+function setCountdown(c) { state.countdown = c ? { label: c.label, endsAt: c.endsAt, skew: (c.now || Date.now()) - Date.now() } : null; tickCountdown(); clearInterval(cdTimer); if (state.countdown) cdTimer = setInterval(tickCountdown, 1000); }
+function tickCountdown() {
+  const bar = $('cdBar'), c = state.countdown; if (!bar) return;
+  if (!c) { bar.classList.add('hidden'); return; }
+  const left = c.endsAt - (Date.now() + c.skew);
+  if (left < -10 * 60000) { state.countdown = null; clearInterval(cdTimer); bar.classList.add('hidden'); return; }
+  const s = Math.max(0, Math.floor(left / 1000)), d = Math.floor(s / 86400), hh = Math.floor((s % 86400) / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60, p2 = (n) => String(n).padStart(2, '0');
+  const t = left <= 0 ? 'NOW!' : d ? `${d}d ${hh}h ${p2(mm)}m` : hh ? `${hh}h ${p2(mm)}m ${p2(ss)}s` : `${p2(mm)}m ${p2(ss)}s`;
+  bar.classList.remove('hidden'); bar.classList.toggle('soon', left < 5 * 60000);
+  bar.replaceChildren(h('span', { class: 'cd-l' }, '⏳ ' + c.label), h('b', { class: 'cd-t' }, t));
+}
+function countdownMaker() {
+  const label = h('input', { type: 'text', maxlength: 60, value: 'Next update', placeholder: 'What is coming?' });
+  const presets = ['Next update', 'Admin abuse', 'Event', 'Giveaway'].map((t) => h('button', { type: 'button', class: 'btn small chip', onclick: () => { label.value = t; } }, t));
+  const when = h('input', { type: 'datetime-local' });
+  const setIn = (mins) => { const d = new Date(Date.now() + mins * 60000 - new Date().getTimezoneOffset() * 60000); when.value = d.toISOString().slice(0, 16); };
+  const quick = [['30 min', 30], ['1 hour', 60], ['6 hours', 360], ['1 day', 1440], ['3 days', 4320], ['1 week', 10080]].map(([t, m]) => h('button', { type: 'button', class: 'btn small chip', onclick: () => setIn(m) }, t));
+  const cur = h('div', { class: 'note' }, state.countdown ? 'Running now: ' + state.countdown.label : 'No countdown is running.');
+  return h('section', {}, h('h4', {}, '⏳ Countdown'),
+    h('div', { class: 'note' }, 'Shows a countdown bar above the chat for everyone, like "Next update in 2d 3h". It stays for 10 minutes after it hits zero.'),
+    h('label', {}, 'What is coming', label), h('div', { class: 'ar-chips' }, presets),
+    h('label', {}, 'When', when), h('div', { class: 'ar-chips' }, quick),
+    h('div', { style: 'margin:8px 0' },
+      h('button', { type: 'button', class: 'btn primary small', onclick: () => attempt(async () => {
+        if (!when.value) throw new Error('Pick when it happens (or tap a quick button)');
+        const r = await api('/owner/countdown', 'PUT', { label: label.value, endsAt: new Date(when.value).getTime() }); setCountdown(r.countdown); cur.textContent = 'Running now: ' + label.value; toast2('Countdown started');
+      }) }, '⏳ Start countdown'),
+      h('button', { type: 'button', class: 'btn small', style: 'margin-left:8px', onclick: () => attempt(async () => { await api('/owner/countdown', 'DELETE'); setCountdown(null); cur.textContent = 'No countdown is running.'; toast2('Countdown cleared'); }) }, 'Clear')), cur);
+}
+
+/* ---- web games (the Owner adds links; everyone plays them here) ---- */
+state.webgames = [];
+async function loadWebGames() { state.webgames = (await api('/webgames')).games; if (document.getElementById('wgList')) drawWebGames(); }
+function playWebGame(g) {
+  const frame = h('iframe', { class: 'wg-frame', src: g.url, allow: 'fullscreen; gamepad; autoplay; clipboard-write', allowfullscreen: '', referrerpolicy: 'no-referrer', sandbox: 'allow-scripts allow-same-origin allow-forms allow-pointer-lock allow-popups' });
+  const box = h('div', { class: 'modal wgplay' },
+    h('div', { class: 'wg-bar' }, h('b', {}, `${g.icon} ${g.name}`), h('span', { class: 'wg-hint' }, 'Blank or blocked? Some sites do not allow playing inside other pages.'),
+      h('a', { class: 'btn small', href: g.url, target: '_blank', rel: 'noopener noreferrer' }, 'Open in new tab'),
+      h('button', { type: 'button', class: 'btn small', onclick: () => { try { frame.requestFullscreen(); } catch (e) { /* no */ } } }, '⛶'),
+      h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: () => { frame.src = 'about:blank'; closeOverlay(); } }, '✕')), frame);
+  openOverlay(box);
+}
+function drawWebGames() {
+  const box = document.getElementById('wgList'); if (!box) return;
+  box.replaceChildren(...(state.webgames.length ? state.webgames.map((g) => h('div', { class: 'wg-card' },
+    h('button', { type: 'button', class: 'wg-play', onclick: () => playWebGame(g) }, h('span', { class: 'wg-ic' }, g.icon), h('span', { class: 'wg-n' }, g.name)),
+    isOwner() ? h('button', { type: 'button', class: 'icon-btn', title: 'Remove', onclick: () => attempt(async () => { if (!(await confirmBox('Remove ' + g.name + '?', 'It disappears for everyone.', 'Remove'))) return; await api('/owner/webgames/' + g.id, 'DELETE'); await loadWebGames(); }) }, '✕') : null))
+    : [h('div', { class: 'note' }, isOwner() ? 'No games yet. Add links in the Owner Panel under Web games.' : 'No web games yet. The Owner can add some!')]));
+}
+function openWebGames() {
+  openOverlay(h('div', { class: 'modal wglib' }, h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'), h('h2', {}, '🌐 Web games'),
+    h('p', { class: 'rw-sub' }, 'Games from around the web that run right here. Tap one to play.'), h('div', { id: 'wgList', class: 'wg-list' })));
+  drawWebGames(); attempt(loadWebGames);
+}
+$('railGames').onclick = $('headGames').onclick = openWebGames;
+function webGamesMaker() {
+  const name = h('input', { type: 'text', maxlength: 40, placeholder: 'Game name' }), icon = h('input', { type: 'text', maxlength: 2, value: '🎮', style: 'width:60px' }), url = h('input', { type: 'url', placeholder: 'https://… (link to the game)' });
+  const list = h('div', {});
+  const paint = () => list.replaceChildren(...state.webgames.map((g) => h('div', { class: 'own-row' }, h('span', {}, g.icon), h('span', { class: 'own-name' }, g.name), h('button', { type: 'button', class: 'btn danger small', onclick: () => attempt(async () => { await api('/owner/webgames/' + g.id, 'DELETE'); await loadWebGames(); paint(); }) }, 'Remove'))));
+  loadWebGames().then(paint).catch(() => {});
+  return h('section', {}, h('h4', {}, '🌐 Web games'),
+    h('div', { class: 'note' }, 'Add a link to a game that runs in a web page and everyone can play it from the 🌐 button. Some sites refuse to open inside other pages; those still work with "Open in new tab".'),
+    h('label', {}, 'Name', name), h('label', {}, 'Icon (an emoji)', icon), h('label', {}, 'Link', url),
+    h('button', { type: 'button', class: 'btn primary small', style: 'margin:8px 0', onclick: () => attempt(async () => { await api('/owner/webgames', 'POST', { name: name.value, icon: icon.value, url: url.value }); name.value = ''; url.value = ''; await loadWebGames(); paint(); toast2('Game added'); }) }, '＋ Add game'), list);
+}
+
+/* ---- welcome tour ---- */
+const TOUR = [
+  ['👋', 'Welcome to Warms World!', 'This is a hangout for friends: chat, games, coins and fun. Here is a quick look at what you can do. It takes 30 seconds.'],
+  ['💬', 'Chat and spaces', 'Talk in channels, reply, react with emoji and send pictures. Spaces are the round buttons on the far left bar. Add friends in 💬 Messages to chat privately or call them.'],
+  ['🪙', 'Coins and the shop', 'Coins are play money. Spin the wheel once a day, then spend coins in the shop on chat tags, Mystery Machine rolls and seasonal packs. Tap your coin count to open it.'],
+  ['🕹️', 'The Arcade', 'Reflex games like Whack-a-Mole earn coins. Coin games like Blackjack, Roulette, Slots and Higher or Lower let you bet them, up to everything you have. Careful, you can lose!'],
+  ['📋', 'Daily quests', 'Every day there are five quests, like sending messages or playing games. Finish them for coins, and all five gives a bonus. They are in the 📋 button and the little box in the sidebar.'],
+  ['📊', 'Polls, events and more', 'The Owner runs polls (they pop up for a minute), countdowns, minigames and surprise events. Check 📜 Update log for what is new, and 🌐 for web games.'],
+  ['🎉', 'You are all set!', 'Be kind, follow the Server rules, and have fun. Enjoy!'],
+];
+function openTour(first) {
+  let i = 0;
+  const body = h('div', { class: 'tour-body' }), dots = h('div', { class: 'tour-dots' }), next = h('button', { type: 'button', class: 'btn primary' }, 'Next'), back = h('button', { type: 'button', class: 'btn' }, 'Back'), skip = h('button', { type: 'button', class: 'btn small tour-skip' }, 'Skip');
+  const done = () => { closeOverlay(); if (first || state.tour) { state.tour = false; api('/tour-done', 'POST', {}).catch(() => {}); } };
+  const paint = () => {
+    const [ic, t, tx] = TOUR[i];
+    body.replaceChildren(h('div', { class: 'tour-ic' }, ic), h('h2', {}, t), h('p', {}, tx));
+    body.classList.remove('flip'); void body.offsetWidth; body.classList.add('flip');
+    dots.replaceChildren(...TOUR.map((_, k) => h('i', { class: k === i ? 'on' : '' })));
+    next.textContent = i === TOUR.length - 1 ? "Let's go!" : 'Next'; back.style.visibility = i ? 'visible' : 'hidden'; skip.style.visibility = i === TOUR.length - 1 ? 'hidden' : 'visible';
+    uiSound('pop');
+  };
+  next.onclick = () => { if (i >= TOUR.length - 1) { popConfetti(); done(); } else { i++; paint(); } };
+  back.onclick = () => { if (i) { i--; paint(); } }; skip.onclick = done;
+  openOverlay(h('div', { class: 'modal tour' }, body, dots, h('div', { class: 'tour-nav' }, back, skip, next)));
+  paint();
+}
+$('railTour').onclick = () => openTour(false);
+
 /* ------------------------------------------------------------------ Polls */
 state.polls = []; state.unvoted = 0;
 function renderPollDot() { for (const id of ['railPollDot', 'headPollDot']) $(id).classList.toggle('hidden', !state.unvoted); }
 async function loadPolls() {
   const r = await api('/polls');
-  state.polls = r.polls; state.unvoted = r.unvoted; renderPollDot();
+  state.polls = r.polls; state.unvoted = r.unvoted; renderPollDot(); renderSideBox();
   if (document.getElementById('pollList')) drawPolls();
 }
 $('railPolls').onclick = $('headPolls').onclick = () => openPolls();

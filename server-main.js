@@ -117,6 +117,8 @@ for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
   if (!db.codes || typeof db.codes !== 'object' || Array.isArray(db.codes)) db.codes = {};
   if (!Array.isArray(db.ipBans)) db.ipBans = [];
   if (!Array.isArray(db.polls)) db.polls = [];
+if (!Array.isArray(db.webgames)) db.webgames = [];
+if (db.countdown === undefined) db.countdown = null;
   if (!db.invites || typeof db.invites !== 'object' || Array.isArray(db.invites)) db.invites = {};
   if (typeof db.settings.inviteOnly !== 'boolean') db.settings.inviteOnly = INVITE_DEFAULT;
   if (!db.settings.inviteReset) { db.settings.inviteOnly = INVITE_DEFAULT; db.settings.inviteReset = true; } // one-time: invites start switched off after this update
@@ -509,6 +511,7 @@ app.post('/api/register', async (req, res) => {
       createdAt: Date.now(),
       announced: false,
       rulesAgreed: RULES_VERSION, rulesAgreedAt: Date.now(),
+      toured: false,
     };
     db.users[user.id] = user;
     if (invite) { invite.uses++; invite.usedBy.push(user.username); user.invitedBy = invite.by; }
@@ -560,6 +563,8 @@ app.get('/api/bootstrap', auth, (req, res) => {
     perks: { troll: canTroll(req.user), community: isCommunity(req.user) },
     perms: PERMS,
     economy: { ...economyFor(req.user), ...economyInfo() },
+    tour: req.user.toured === false && process.env.TOUR !== '0', // (TOUR=0 is only for automated tests)
+    countdown: countdownView(),
   });
 });
 
@@ -721,6 +726,7 @@ app.post('/api/wheel/spin', auth, (req, res) => {
   const won = seg.coins * eventMult('double');
   u.coins += won;
   u.lastSpin = Date.now();
+  questBump(u, 'spin');
   save();
   res.json({ index: seg.i, base: seg.coins, won, ...economyFor(u) });
 });
@@ -761,7 +767,13 @@ const isStaffUser = (u) => isAdmin(u);
 function automodMuted(u) { return u.mutedUntil && u.mutedUntil > Date.now(); }
 
 // Returns true (after answering the request) when the text broke a rule. The message is NOT posted.
+// AutoMod stays out of private places: direct messages, and chats inside a space the Owner limited to some roles (like the Staff Hub).
+function inPrivateSpace(channelId) {
+  const ch = db.channels.find((c) => c.id === channelId), sp = ch && spaceById(ch.spaceId || db.spaces[0].id);
+  return !!(sp && (sp.system || (Array.isArray(sp.roles) && sp.roles.length)));
+}
 function automodGate(req, res, text, where) {
+  if (where && inPrivateSpace(where)) return false;
   const cfg = db.settings.automod;
   const u = req.user;
   if (!cfg.enabled || (isStaffUser(u) && !cfg.includeStaff)) return false;
@@ -892,13 +904,14 @@ app.post('/api/dm/:id', auth, (req, res) => {
   const content = String(req.body.content || '').slice(0, 2000);
   const image = typeof req.body.image === 'string' && /^\/uploads\/[a-f0-9]+\.(png|jpg|gif|webp)$/.test(req.body.image) ? req.body.image : null;
   if (!content.trim() && !image) return res.status(400).json({ error: 'Empty message' });
-  if (content.trim() && automodGate(req, res, content, null)) return;
+  // Private messages between friends are not moderated: AutoMod never checks or mutes in DMs.
   const msg = { id: uid(8), from: me.id, to: other.id, content, ts: Date.now() };
   if (image) msg.image = image;
   const list = dmList(me.id, other.id);
   list.push(msg);
   if (list.length > 2000) list.splice(0, list.length - 2000);
   me.dmRead[other.id] = Date.now();
+  if (other.id !== me.id && (content.trim().length >= 3 || image)) questChat(req.user, 'dm');
   save();
   sendTo(me.id, { t: 'dm', msg });
   if (other.id !== me.id) sendTo(other.id, { t: 'dm', msg });
@@ -1028,6 +1041,7 @@ app.post('/api/channels/:id/messages', auth, (req, res) => {
   const msg = { id: uid(8), channelId: req.params.id, userId: req.user.id, content, image, ts: Date.now(), replyTo, reactions: {} };
   list.push(msg);
   if (list.length > 5000) list.splice(0, list.length - 5000);
+  if (content.trim().length >= 3 || image) questChat(req.user, 'chat');
   save();
   broadcastChannel(req.params.id, { t: 'message', msg });
   res.json(msg);
@@ -1300,7 +1314,7 @@ app.put('/api/messages/:id/reactions', auth, (req, res) => {
     delete r[emoji];
     return res.status(400).json({ error: 'Too many different reactions on one message' });
   }
-  if (i >= 0) ids.splice(i, 1); else ids.push(req.user.id);
+  if (i >= 0) ids.splice(i, 1); else { ids.push(req.user.id); if (f.msg.userId !== req.user.id) questBump(req.user, 'react'); }
   if (!ids.length) delete r[emoji];
   save();
   broadcastChannel(f.channelId, { t: 'reaction', id: f.msg.id, channelId: f.channelId, reactions: r });
@@ -2133,7 +2147,7 @@ app.post('/api/arcade/finish', auth, (req, res) => {
   if (game === 'reaction' && (extra < 80 || extra > 5000)) return res.json({ earned: 0, note: 'That score is not possible.', ...economyFor(req.user) });
   const u = econ(req.user), a = arcadeState(u);
   const want = arcadeReward(game, score, extra), coins = Math.max(0, Math.min(want, ARCADE_DAILY_CAP - a.earned));
-  a.earned += coins; u.coins = Math.min(1e9, u.coins + coins); save();
+  a.earned += coins; u.coins = Math.min(1e9, u.coins + coins); questBump(u, 'arcade'); save();
   res.json({ earned: coins, wanted: want, capped: coins < want, left: Math.max(0, ARCADE_DAILY_CAP - a.earned), ...economyFor(u) });
 });
 const SLOT_SYMBOLS = [['🍒', 30, 5], ['🍋', 24, 7], ['🔔', 18, 14], ['⭐', 9, 35], ['💎', 3, 120]]; // symbol, weight, pays x the bet for three in a row
@@ -2144,7 +2158,7 @@ function coinGame(req, res, play) {
   if (!Number.isFinite(bet) || bet < 1) return res.status(400).json({ error: 'Bet at least 1 coin' });
   if (u.coins < bet) return res.status(400).json({ error: 'You do not have enough coins' });
   const out = play(bet); if (!out) return res.status(400).json({ error: 'Pick something first' });
-  u.coins = Math.max(0, Math.min(1e9, u.coins - bet + out.back)); save();
+  u.coins = Math.max(0, Math.min(1e9, u.coins - bet + out.back)); questBump(u, 'coin'); save();
   res.json({ ...out, bet, net: out.back - bet, ...economyFor(u) });
 }
 app.post('/api/arcade/coinflip', auth, (req, res) => coinGame(req, res, (bet) => {
@@ -2171,6 +2185,7 @@ function betOf(req, res) {
   const u = econ(req.user), bet = Math.trunc(Number(req.body.bet));
   if (!Number.isFinite(bet) || bet < 1) { res.status(400).json({ error: 'Bet at least 1 coin' }); return null; }
   if (u.coins < bet) { res.status(400).json({ error: 'You do not have enough coins' }); return null; }
+  questBump(u, 'coin');
   return bet;
 }
 const betLimited = (req, res) => (rateLimited('bet:' + req.user.id, 40, 30000) ? (res.status(429).json({ error: 'Slow down a little' }), true) : false);
@@ -2321,7 +2336,7 @@ app.post('/api/owner/polls', auth, ownerOnly, (req, res) => {
   while (db.polls.length > 40) { const i = db.polls.findIndex((x) => !pollOpen(x)); db.polls.splice(i < 0 ? 0 : i, 1); }
   audit(req.user, `started a poll: ${question.slice(0, 80)}`);
   tellEveryone(req.user, `📊 New poll: ${question} Open the 📊 button on the left bar to vote!`);
-  save(); broadcast({ t: 'poll', id: poll.id });
+  save(); broadcast({ t: 'poll', id: poll.id, fresh: true });
   res.json({ polls: pollList(req.user) });
 });
 app.post('/api/owner/polls/:id/close', auth, ownerOnly, (req, res) => {
@@ -2481,6 +2496,98 @@ app.post('/api/community/announce', auth, needCommunity, (req, res) => {
   tellEveryone(req.user, text);
   save();
   res.json({ ok: true });
+});
+
+
+/* ------------------------------------------------------------------ daily quests
+   Five quests a day (the same five for everyone, picked from a pool), reset at midnight Pacific time.
+   Coins are paid the moment a quest is finished, plus a bonus for finishing all five. */
+const QUEST_TZ = 'America/Los_Angeles';
+const QUEST_POOL = [
+  { id: 'chat10', key: 'chat', goal: 10, reward: 40, text: 'Send 10 chat messages' },
+  { id: 'chat30', key: 'chat', goal: 30, reward: 90, text: 'Send 30 chat messages' },
+  { id: 'react5', key: 'react', goal: 5, reward: 25, text: 'React to 5 messages' },
+  { id: 'dm3', key: 'dm', goal: 3, reward: 25, text: 'Send 3 messages to friends' },
+  { id: 'arcade2', key: 'arcade', goal: 2, reward: 40, text: 'Finish 2 arcade reflex games' },
+  { id: 'arcade5', key: 'arcade', goal: 5, reward: 80, text: 'Finish 5 arcade reflex games' },
+  { id: 'coin5', key: 'coin', goal: 5, reward: 40, text: 'Play 5 coin games' },
+  { id: 'spin', key: 'spin', goal: 1, reward: 30, text: 'Spin the daily wheel' },
+  { id: 'coin12', key: 'coin', goal: 12, reward: 70, text: 'Play 12 coin games' },
+];
+const QUEST_BONUS = 100;
+const questDay = (t = Date.now()) => new Date(t).toLocaleDateString('en-CA', { timeZone: QUEST_TZ });
+function questMsLeft() {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: QUEST_TZ, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const g = (t) => Number(parts.find((x) => x.type === t).value);
+  return 86400000 - (g('hour') * 3600 + g('minute') * 60 + g('second')) * 1000;
+}
+function questsToday(day = questDay()) { // same picks for everyone: a seeded shuffle of the pool
+  let seed = 0; for (const ch of day) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const a = QUEST_POOL.slice();
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a.slice(0, 5);
+}
+function questState(u) {
+  const day = questDay();
+  if (!u.quests || u.quests.day !== day) u.quests = { day, progress: {}, done: {}, bonus: false };
+  return u.quests;
+}
+function questBump(u, key, n = 1) {
+  if (!u || process.env.QUESTS === '0') return; // (QUESTS=0 is only for automated tests that count coins exactly)
+  const q = questState(u), done = [];
+  for (const d of questsToday(q.day)) {
+    if (d.key !== key || q.done[d.id]) continue;
+    q.progress[d.id] = Math.min(d.goal, (q.progress[d.id] || 0) + n);
+    if (q.progress[d.id] >= d.goal) { q.done[d.id] = true; econ(u); addCoins(u, d.reward); done.push({ text: d.text, reward: d.reward }); }
+  }
+  if (!q.bonus && questsToday(q.day).every((d) => q.done[d.id])) { q.bonus = true; econ(u); addCoins(u, QUEST_BONUS); done.push({ text: 'All daily quests done!', reward: QUEST_BONUS }); }
+  if (done.length) sendTo(u.id, { t: 'quest', done });
+}
+const questGate = new Map(); // one chat message counts every few seconds, so spamming does not farm coins
+function questChat(u, key) {
+  const k = key + u.id, last = questGate.get(k) || 0;
+  if (Date.now() - last < 2000) return;
+  questGate.set(k, Date.now()); questBump(u, key);
+}
+function questView(u) {
+  const q = questState(u);
+  return { day: q.day, resetsIn: questMsLeft(), bonus: { reward: QUEST_BONUS, done: !!q.bonus },
+    quests: questsToday(q.day).map((d) => ({ id: d.id, text: d.text, goal: d.goal, reward: d.reward, progress: q.progress[d.id] || 0, done: !!q.done[d.id] })) };
+}
+app.get('/api/quests', auth, (req, res) => { econ(req.user); res.json(questView(req.user)); });
+
+/* ---- the welcome tour (shown once to new people) ---- */
+app.post('/api/tour-done', auth, (req, res) => { req.user.toured = true; save(); res.json({ ok: true }); });
+
+/* ---- Owner countdown ("Next update in...", "Admin abuse in...") ---- */
+function countdownView() { const c = db.countdown; return c && c.endsAt + 10 * 60000 > Date.now() ? { label: c.label, endsAt: c.endsAt, now: Date.now() } : null; }
+app.get('/api/countdown', auth, (req, res) => res.json({ countdown: countdownView() }));
+app.put('/api/owner/countdown', auth, ownerOnly, (req, res) => {
+  const label = String(req.body.label || '').trim().slice(0, 60);
+  const endsAt = Math.trunc(Number(req.body.endsAt));
+  if (!label) return res.status(400).json({ error: 'Type what is coming first' });
+  if (!Number.isFinite(endsAt) || endsAt < Date.now() + 5000 || endsAt > Date.now() + 365 * 86400000) return res.status(400).json({ error: 'Pick a time in the future (within a year)' });
+  db.countdown = { label, endsAt }; audit(req.user, `started a countdown: ${label}`); save(); broadcast({ t: 'countdown' });
+  res.json({ countdown: countdownView() });
+});
+app.delete('/api/owner/countdown', auth, ownerOnly, (req, res) => { db.countdown = null; audit(req.user, 'cleared the countdown'); save(); broadcast({ t: 'countdown' }); res.json({ ok: true }); });
+
+/* ---- web games: the Owner adds links to games that run in a web page; everyone can play them here ---- */
+app.get('/api/webgames', auth, (req, res) => res.json({ games: db.webgames }));
+app.post('/api/owner/webgames', auth, ownerOnly, (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0, 40), icon = String(req.body.icon || '').trim().slice(0, 4) || '🎮';
+  let url; try { url = new URL(String(req.body.url || '').trim()); } catch { url = null; }
+  if (!name) return res.status(400).json({ error: 'Give the game a name' });
+  if (!url || url.protocol !== 'https:') return res.status(400).json({ error: 'The link must start with https://' });
+  if (db.webgames.length >= 60) return res.status(400).json({ error: 'That is plenty of games already (60 max)' });
+  db.webgames.push({ id: uid(4), name, icon, url: url.href }); audit(req.user, `added the web game ${name}`); save(); broadcast({ t: 'webgames' });
+  res.json({ games: db.webgames });
+});
+app.delete('/api/owner/webgames/:id', auth, ownerOnly, (req, res) => {
+  const g = db.webgames.find((x) => x.id === req.params.id); if (!g) return res.status(404).json({ error: 'No such game' });
+  db.webgames = db.webgames.filter((x) => x !== g); audit(req.user, `removed the web game ${g.name}`); save(); broadcast({ t: 'webgames' });
+  res.json({ games: db.webgames });
 });
 
 // Render stops the old copy with SIGTERM during an update: write everything to disk first so nothing is lost.

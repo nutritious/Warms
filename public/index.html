@@ -34,7 +34,10 @@
       <button id="railDM" class="rail-chat rail-dm" type="button" title="Friends and messages">💬<span id="railDMBadge" class="rail-badge hidden"></span></button>
       <button id="railLog" class="rail-chat rail-log" type="button" title="Update log: what's new">📜<span id="railLogDot" class="rail-badge dot hidden"></span></button>
       <button id="railPolls" class="rail-chat rail-polls" type="button" title="Polls: vote on what the Owner asks">📊<span id="railPollDot" class="rail-badge dot hidden"></span></button>
+      <button id="railQuests" class="rail-chat rail-quests" type="button" title="Daily quests: finish them for coins">📋<span id="railQuestDot" class="rail-badge dot hidden"></span></button>
       <button id="railArcade" class="rail-chat rail-arcade" type="button" title="Arcade: games and coin games">🕹️</button>
+      <button id="railGames" class="rail-chat rail-games" type="button" title="Web games: play right here">🌐</button>
+      <button id="railTour" class="rail-chat rail-tour hidden" type="button" title="Quick tour: what you can do here">❓</button>
       <button id="railGame" class="rail-chat rail-game hidden" type="button" title="A minigame is running! Win a prize">🎮</button>
       <div class="rail-sep"></div>
       <div id="railChats" class="rail-chats"></div>
@@ -52,6 +55,7 @@
         <button id="reportBtn" class="reportlink" type="button">Report a problem</button>
         <button id="rulesBtn" class="reportlink" type="button">Server rules</button>
       </div>
+      <div id="sideBox" class="sidebox hidden"></div>
       <div id="voiceBar" class="voicebar hidden"></div>
       <footer class="userpanel">
         <div id="meAvatar" class="avatar"></div>
@@ -70,7 +74,8 @@
     </aside>
 
     <main class="main">
-      <header class="main-head"><span class="hash">#</span><span id="channelTitle"></span><button id="headDM" class="head-dm" type="button" title="Friends and messages">💬<span id="headDMBadge" class="rail-badge hidden"></span></button><span class="head-quick"><button id="headPolls" class="head-btn" type="button" title="Polls">📊<span id="headPollDot" class="rail-badge dot hidden"></span></button><button id="headArcade" class="head-btn" type="button" title="Arcade">🕹️</button><button id="headLog" class="head-btn" type="button" title="Update log">📜<span id="headLogDot" class="rail-badge dot hidden"></span></button></span></header>
+      <header class="main-head"><span class="hash">#</span><span id="channelTitle"></span><button id="headDM" class="head-dm" type="button" title="Friends and messages">💬<span id="headDMBadge" class="rail-badge hidden"></span></button><span class="head-quick"><button id="headQuests" class="head-btn" type="button" title="Daily quests">📋<span id="headQuestDot" class="rail-badge dot hidden"></span></button><button id="headGames" class="head-btn" type="button" title="Web games">🌐</button><button id="headPolls" class="head-btn" type="button" title="Polls">📊<span id="headPollDot" class="rail-badge dot hidden"></span></button><button id="headArcade" class="head-btn" type="button" title="Arcade">🕹️</button><button id="headLog" class="head-btn" type="button" title="Update log">📜<span id="headLogDot" class="rail-badge dot hidden"></span></button></span></header>
+      <div id="cdBar" class="cdbar hidden"></div>
       <div id="messages" class="messages"></div>
       <div class="composer-wrap">
         <div id="replyBar" class="replybar hidden"></div>

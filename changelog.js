@@ -105,4 +105,13 @@ module.exports = [
     'A damaged save file is never replaced by an empty site: a copy is kept first',
     'Owner Panel > Save & restore shows when the site last started, so you can tell if it restarted',
   ] },
+  { id: 'v19', date: '2026-10-13', title: 'Daily quests, poll pop-ups, tour and web games', notes: [
+    'Daily quests: five new quests every day (chatting, reacting, arcade and coin games, the daily wheel). You get coins the moment you finish one, plus a bonus for finishing all five. Open them with the 📋 button or the little box in the sidebar',
+    'Polls now pop up for everyone for one minute, and the open poll also sits in a little box in the sidebar, so nobody misses it',
+    'New people get a welcome tour explaining chat, coins, the shop, the arcade, quests and polls. They see it once, and it is gone after they finish',
+    'The Owner can start a countdown (like "Next update" or "Admin abuse") that shows above the chat for everyone',
+    'Web games: the Owner can add links to games that run in a web page, and everyone can play them from the 🌐 button',
+    'The Owner and Admins can delete a space straight from the far-left bar (hover over it and press the ✕)',
+    'AutoMod no longer mutes anyone in private chats: direct messages, and spaces limited to certain roles',
+  ] },
 ];
