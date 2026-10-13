@@ -109,6 +109,7 @@ for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
   db.minigame = db.minigame && typeof db.minigame === 'object' ? db.minigame : null;
   if (!db.codes || typeof db.codes !== 'object' || Array.isArray(db.codes)) db.codes = {};
   if (!Array.isArray(db.ipBans)) db.ipBans = [];
+  if (!Array.isArray(db.polls)) db.polls = [];
   if (!db.invites || typeof db.invites !== 'object' || Array.isArray(db.invites)) db.invites = {};
   if (typeof db.settings.inviteOnly !== 'boolean') db.settings.inviteOnly = INVITE_DEFAULT;
   if (!db.settings.inviteReset) { db.settings.inviteOnly = INVITE_DEFAULT; db.settings.inviteReset = true; } // one-time: invites start switched off after this update
@@ -2131,7 +2132,7 @@ function spinSlotReel() { let r = crypto.randomInt(0, SLOT_SYMBOLS.reduce((a, b)
 function coinGame(req, res, play) {
   if (rateLimited('bet:' + req.user.id, 25, 30000)) return res.status(429).json({ error: 'Slow down a little' });
   const u = econ(req.user), bet = Math.trunc(Number(req.body.bet));
-  if (!Number.isFinite(bet) || bet < 1 || bet > 500) return res.status(400).json({ error: 'Bet between 1 and 500 coins' });
+  if (!Number.isFinite(bet) || bet < 1) return res.status(400).json({ error: 'Bet at least 1 coin' });
   if (u.coins < bet) return res.status(400).json({ error: 'You do not have enough coins' });
   const out = play(bet); if (!out) return res.status(400).json({ error: 'Pick something first' });
   u.coins = Math.max(0, Math.min(1e9, u.coins - bet + out.back)); save();
@@ -2154,6 +2155,176 @@ app.post('/api/arcade/slots', auth, (req, res) => coinGame(req, res, (bet) => {
   else if (reels.filter((x) => x === '🍒').length === 2) mult = 1.5;
   return { reels, won: mult > 0, mult, back: Math.floor(bet * mult) };
 }));
+
+/* ---- more gambling: Blackjack, Roulette, Higher or Lower. Bets can be any amount up to the coins you have. ---- */
+const addCoins = (u, n) => { u.coins = Math.max(0, Math.min(1e9, u.coins + n)); };
+function betOf(req, res) {
+  const u = econ(req.user), bet = Math.trunc(Number(req.body.bet));
+  if (!Number.isFinite(bet) || bet < 1) { res.status(400).json({ error: 'Bet at least 1 coin' }); return null; }
+  if (u.coins < bet) { res.status(400).json({ error: 'You do not have enough coins' }); return null; }
+  return bet;
+}
+const betLimited = (req, res) => (rateLimited('bet:' + req.user.id, 40, 30000) ? (res.status(429).json({ error: 'Slow down a little' }), true) : false);
+
+// Blackjack: dealer stands on 17, blackjack pays 3 to 2, double down on your first two cards, no splitting.
+const BJ_SUITS = ['♠', '♥', '♦', '♣'], BJ_RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const bjDeck = () => { const d = []; for (const s of BJ_SUITS) for (const r of BJ_RANKS) d.push(r + s); for (let i = d.length - 1; i > 0; i--) { const j = crypto.randomInt(0, i + 1); [d[i], d[j]] = [d[j], d[i]]; } return d; };
+const bjVal = (c) => { const r = c.slice(0, -1); return r === 'A' ? 11 : 'JQK'.includes(r) || r === '10' ? 10 : Number(r); };
+function bjTotal(h) { let t = 0, a = 0; for (const c of h) { const v = bjVal(c); t += v; if (v === 11) a++; } while (t > 21 && a) { t -= 10; a--; } return t; }
+const bjNatural = (h) => h.length === 2 && bjTotal(h) === 21;
+function bjView(u, g, result) {
+  const done = !!result;
+  return { active: true, player: g.p, dealer: done ? g.d : [g.d[0], '??'], playerTotal: bjTotal(g.p), dealerTotal: done ? bjTotal(g.d) : bjVal(g.d[0]), bet: g.bet, canDouble: !done && g.p.length === 2 && u.coins >= g.bet, state: done ? 'done' : 'playing', result: result || null };
+}
+function bjFinish(u, g, result) {
+  const back = result === 'blackjack' ? g.bet + Math.floor(g.bet * 1.5) : result === 'win' ? g.bet * 2 : result === 'push' ? g.bet : 0;
+  addCoins(u, back); u.bj = null; save();
+  return { ...bjView(u, g, result), back, net: back - g.bet, won: back > g.bet, ...economyFor(u) };
+}
+function bjDealerPlays(g) { while (bjTotal(g.d) < 17) g.d.push(g.deck.pop()); }
+function bjSettle(u, g) { // after the player stands
+  bjDealerPlays(g);
+  const pt = bjTotal(g.p), dt = bjTotal(g.d);
+  return bjFinish(u, g, dt > 21 || pt > dt ? 'win' : pt === dt ? 'push' : 'lose');
+}
+app.get('/api/arcade/blackjack', auth, (req, res) => { const u = econ(req.user); res.json(u.bj ? bjView(u, u.bj) : { active: false }); });
+app.post('/api/arcade/blackjack/deal', auth, (req, res) => {
+  if (betLimited(req, res)) return;
+  const u = econ(req.user);
+  if (u.bj) return res.status(400).json({ error: 'Finish your current hand first' });
+  const bet = betOf(req, res); if (!bet) return;
+  addCoins(u, -bet);
+  const g = u.bj = { deck: bjDeck(), p: [], d: [], bet };
+  g.p.push(g.deck.pop()); g.d.push(g.deck.pop()); g.p.push(g.deck.pop()); g.d.push(g.deck.pop());
+  if (bjNatural(g.p) && bjNatural(g.d)) return res.json(bjFinish(u, g, 'push'));
+  if (bjNatural(g.p)) return res.json(bjFinish(u, g, 'blackjack'));
+  if (bjNatural(g.d)) return res.json(bjFinish(u, g, 'lose'));
+  save(); res.json({ ...bjView(u, g), ...economyFor(u) });
+});
+app.post('/api/arcade/blackjack/hit', auth, (req, res) => {
+  const u = econ(req.user), g = u.bj; if (!g) return res.status(400).json({ error: 'No hand in progress' });
+  g.p.push(g.deck.pop());
+  if (bjTotal(g.p) > 21) return res.json(bjFinish(u, g, 'lose'));
+  if (bjTotal(g.p) === 21) return res.json(bjSettle(u, g));
+  save(); res.json({ ...bjView(u, g), ...economyFor(u) });
+});
+app.post('/api/arcade/blackjack/stand', auth, (req, res) => { const u = econ(req.user), g = u.bj; if (!g) return res.status(400).json({ error: 'No hand in progress' }); res.json(bjSettle(u, g)); });
+app.post('/api/arcade/blackjack/double', auth, (req, res) => {
+  const u = econ(req.user), g = u.bj; if (!g) return res.status(400).json({ error: 'No hand in progress' });
+  if (g.p.length !== 2) return res.status(400).json({ error: 'You can only double on your first two cards' });
+  if (u.coins < g.bet) return res.status(400).json({ error: 'You do not have enough coins to double' });
+  addCoins(u, -g.bet); g.bet *= 2; g.p.push(g.deck.pop());
+  if (bjTotal(g.p) > 21) return res.json(bjFinish(u, g, 'lose'));
+  res.json(bjSettle(u, g));
+});
+
+// Roulette: one zero (0 to 36). Even-money bets pay 1 to 1, dozens 2 to 1, one number 35 to 1.
+const ROULETTE_RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+const rouletteColor = (n) => (n === 0 ? 'green' : ROULETTE_RED.has(n) ? 'red' : 'black');
+function roulettePays(pick, n) { // returns the multiplier returned for a win (stake included), or 0
+  if (/^n\d+$/.test(pick)) { const x = Number(pick.slice(1)); return x >= 0 && x <= 36 && x === n ? 36 : 0; }
+  if (n === 0) return 0;
+  switch (pick) {
+    case 'red': return rouletteColor(n) === 'red' ? 2 : 0;
+    case 'black': return rouletteColor(n) === 'black' ? 2 : 0;
+    case 'even': return n % 2 === 0 ? 2 : 0;
+    case 'odd': return n % 2 === 1 ? 2 : 0;
+    case 'low': return n <= 18 ? 2 : 0;
+    case 'high': return n >= 19 ? 2 : 0;
+    case 'd1': return n <= 12 ? 3 : 0;
+    case 'd2': return n >= 13 && n <= 24 ? 3 : 0;
+    case 'd3': return n >= 25 ? 3 : 0;
+  }
+  return 0;
+}
+const ROULETTE_PICKS = new Set(['red', 'black', 'even', 'odd', 'low', 'high', 'd1', 'd2', 'd3']);
+app.post('/api/arcade/roulette', auth, (req, res) => {
+  if (betLimited(req, res)) return;
+  const pick = String(req.body.pick || '');
+  if (!ROULETTE_PICKS.has(pick) && !(/^n\d+$/.test(pick) && Number(pick.slice(1)) <= 36)) return res.status(400).json({ error: 'Pick something first' });
+  const u = econ(req.user), bet = betOf(req, res); if (!bet) return;
+  const n = crypto.randomInt(0, 37), mult = roulettePays(pick, n), back = bet * mult;
+  addCoins(u, back - bet); save();
+  res.json({ result: n, color: rouletteColor(n), won: mult > 0, mult, back, bet, net: back - bet, ...economyFor(u) });
+});
+
+// Higher or Lower: guess if the next card is higher or lower (a tie loses). Chain correct guesses and cash out any time.
+const hlWays = (r) => ({ higher: 13 - r, lower: r - 1 });
+const hlOptions = (r) => { const w = hlWays(r), o = {}; for (const k of ['higher', 'lower']) if (w[k] > 0) o[k] = Math.round((0.96 * 13 / w[k]) * 100) / 100; return o; };
+const hlCard = () => ({ r: crypto.randomInt(1, 14), s: BJ_SUITS[crypto.randomInt(0, 4)] });
+const hlLabel = (c) => (c.r === 1 ? 'A' : c.r === 11 ? 'J' : c.r === 12 ? 'Q' : c.r === 13 ? 'K' : String(c.r)) + c.s;
+function hlView(g) { return { active: true, card: hlLabel(g.card), bet: g.bet, mult: Math.round(g.mult * 100) / 100, streak: g.streak, options: hlOptions(g.card.r), payout: Math.min(1e9, Math.floor(g.bet * g.mult)) }; }
+app.get('/api/arcade/hilo', auth, (req, res) => { const u = econ(req.user); res.json(u.hl ? hlView(u.hl) : { active: false }); });
+app.post('/api/arcade/hilo/deal', auth, (req, res) => {
+  if (betLimited(req, res)) return;
+  const u = econ(req.user);
+  if (u.hl) return res.status(400).json({ error: 'Finish your current round first' });
+  const bet = betOf(req, res); if (!bet) return;
+  addCoins(u, -bet); u.hl = { card: hlCard(), bet, mult: 1, streak: 0 }; save();
+  res.json({ ...hlView(u.hl), ...economyFor(u) });
+});
+app.post('/api/arcade/hilo/guess', auth, (req, res) => {
+  const u = econ(req.user), g = u.hl; if (!g) return res.status(400).json({ error: 'No round in progress' });
+  const dir = req.body.dir === 'lower' ? 'lower' : req.body.dir === 'higher' ? 'higher' : null, opt = dir && hlOptions(g.card.r)[dir];
+  if (!opt) return res.status(400).json({ error: 'You cannot guess that way on this card' });
+  const prev = hlLabel(g.card), next = hlCard(), win = dir === 'higher' ? next.r > g.card.r : next.r < g.card.r;
+  if (!win) { u.hl = null; save(); return res.json({ active: false, lost: true, prev, card: hlLabel(next), bet: g.bet, back: 0, net: -g.bet, ...economyFor(u) }); }
+  g.mult *= opt; g.streak++; g.card = next;
+  if (g.bet * g.mult >= 1e9) { const back = 1e9; addCoins(u, back); u.hl = null; save(); return res.json({ active: false, cashed: true, card: hlLabel(next), bet: g.bet, back, net: back - g.bet, ...economyFor(u) }); }
+  save(); res.json({ ...hlView(g), prev, correct: true, ...economyFor(u) });
+});
+app.post('/api/arcade/hilo/cashout', auth, (req, res) => {
+  const u = econ(req.user), g = u.hl; if (!g) return res.status(400).json({ error: 'No round in progress' });
+  if (g.streak < 1) return res.status(400).json({ error: 'Make at least one correct guess first' });
+  const back = Math.min(1e9, Math.floor(g.bet * g.mult)); addCoins(u, back); u.hl = null; save();
+  res.json({ active: false, cashed: true, bet: g.bet, back, net: back - g.bet, mult: Math.round(g.mult * 100) / 100, ...economyFor(u) });
+});
+
+/* ------------------------------------------------------------------ polls
+   The Owner makes a poll; everyone can vote (and change their vote) until it is closed or runs out of time. */
+const pollOpen = (p) => !p.closed && (!p.endsAt || p.endsAt > Date.now());
+function pollView(p, u) {
+  const counts = {}; for (const v of Object.values(p.votes)) counts[v] = (counts[v] || 0) + 1;
+  const owner = isOwner(u);
+  return { id: p.id, question: p.question, by: p.by, createdAt: p.createdAt, endsAt: p.endsAt || 0, open: pollOpen(p), total: Object.keys(p.votes).length, mine: p.votes[u.id] || null,
+    options: p.options.map((o) => ({ id: o.id, text: o.text, count: counts[o.id] || 0, voters: owner ? Object.entries(p.votes).filter(([, v]) => v === o.id).map(([id]) => (db.users[id] ? db.users[id].username : '?')) : undefined })) };
+}
+const pollList = (u) => db.polls.slice().reverse().slice(0, 15).map((p) => pollView(p, u));
+app.get('/api/polls', auth, (req, res) => res.json({ polls: pollList(req.user), unvoted: db.polls.filter((p) => pollOpen(p) && !p.votes[req.user.id]).length }));
+app.post('/api/polls/:id/vote', auth, (req, res) => {
+  const p = db.polls.find((x) => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'No such poll' });
+  if (!pollOpen(p)) return res.status(400).json({ error: 'This poll is closed' });
+  if (rateLimited('vote:' + req.user.id, 30, 30000)) return res.status(429).json({ error: 'Slow down a little' });
+  const opt = p.options.find((o) => o.id === String(req.body.option || ''));
+  if (!opt) return res.status(400).json({ error: 'Pick one of the choices' });
+  p.votes[req.user.id] = opt.id; save(); broadcast({ t: 'poll', id: p.id });
+  res.json({ ok: true, poll: pollView(p, req.user) });
+});
+app.post('/api/owner/polls', auth, ownerOnly, (req, res) => {
+  const question = String(req.body.question || '').trim().slice(0, 150);
+  const texts = [...new Set((Array.isArray(req.body.options) ? req.body.options : []).map((o) => String(o).trim().slice(0, 60)).filter(Boolean))].slice(0, 8);
+  if (!question) return res.status(400).json({ error: 'Type the question first' });
+  if (texts.length < 2) return res.status(400).json({ error: 'Give at least two different choices' });
+  const minutes = clampNum(req.body.minutes, 0, 10080, 0);
+  const poll = { id: uid(5), question, options: texts.map((text, i) => ({ id: 'o' + (i + 1), text })), votes: {}, by: req.user.username, createdAt: Date.now(), endsAt: minutes ? Date.now() + minutes * 60000 : 0, closed: false };
+  db.polls.push(poll);
+  while (db.polls.length > 40) { const i = db.polls.findIndex((x) => !pollOpen(x)); db.polls.splice(i < 0 ? 0 : i, 1); }
+  audit(req.user, `started a poll: ${question.slice(0, 80)}`);
+  tellEveryone(req.user, `📊 New poll: ${question} Open the 📊 button on the left bar to vote!`);
+  save(); broadcast({ t: 'poll', id: poll.id });
+  res.json({ polls: pollList(req.user) });
+});
+app.post('/api/owner/polls/:id/close', auth, ownerOnly, (req, res) => {
+  const p = db.polls.find((x) => x.id === req.params.id); if (!p) return res.status(404).json({ error: 'No such poll' });
+  p.closed = true; audit(req.user, `closed the poll: ${p.question.slice(0, 80)}`); save(); broadcast({ t: 'poll', id: p.id });
+  res.json({ polls: pollList(req.user) });
+});
+app.delete('/api/owner/polls/:id', auth, ownerOnly, (req, res) => {
+  const p = db.polls.find((x) => x.id === req.params.id); if (!p) return res.status(404).json({ error: 'No such poll' });
+  db.polls = db.polls.filter((x) => x !== p); audit(req.user, `deleted the poll: ${p.question.slice(0, 80)}`); save(); broadcast({ t: 'poll', id: p.id });
+  res.json({ polls: pollList(req.user) });
+});
 
 /* ---------------------------------------------------------------- minigame
    "Number Rush": tap 1 to 16 in order. The Owner picks the time limit and the prize.

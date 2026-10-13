@@ -326,6 +326,7 @@ async function start() {
   loadFriends();
   loadUpdates();
   loadMinigame();
+  attempt(loadPolls);
   playIntro();
   connectWs();
   $('msgInput').focus();
@@ -392,6 +393,8 @@ function connectWs() {
       if (m.kind === 'win') { if (m.username !== me().username) toast2(`🏆 ${m.username} won the minigame in ${m.time}s`); }
       else if (m.kind === 'start') { toast2('🎮 A minigame started! Look for the 🎮 button'); }
       attempt(loadMinigame);
+    } else if (m.t === 'poll') {
+      attempt(loadPolls);
     } else if (m.t === 'welcome') {
       if (m.userId !== state.me) showBanner(m.username, m.text, 'NEW MEMBER', 'welcome');
       attempt(async () => { await refresh(); });
@@ -1745,14 +1748,14 @@ const logSeen = () => { try { return Number(localStorage.getItem('logSeen')) || 
 const markLogSeen = () => { try { localStorage.setItem('logSeen', String(state.updates.reduce((m, x) => Math.max(m, x.seq), 0))); } catch {} renderLogDot(); };
 function renderLogDot() {
   const latest = state.updates.reduce((m, x) => Math.max(m, x.seq), 0);
-  $('railLogDot').classList.toggle('hidden', !(latest > logSeen()));
+  for (const id of ['railLogDot', 'headLogDot']) $(id).classList.toggle('hidden', !(latest > logSeen()));
 }
 async function loadUpdates() {
   try { state.updates = await api('/updates'); } catch { return; }
   renderLogDot();
   if (document.getElementById('ulogList')) drawLog();
 }
-$('railLog').onclick = openUpdateLog;
+$('railLog').onclick = $('headLog').onclick = openUpdateLog;
 
 function openUpdateLog() {
   const box = h('div', { class: 'modal ulog' },
@@ -2928,7 +2931,7 @@ function ownerExtras(data, reopen) {
     h('button', { class: 'btn primary small', style: 'margin:8px 0', onclick: () => { closeOverlay(); openTrollPanel(); } }, '🎭 Open Troll Panel'),
     h('button', { class: 'btn small', style: 'margin:8px 0 8px 8px', onclick: () => { closeOverlay(); openCommunityPanel(); } }, '🌟 Open Community Panel'),
     trollRows.length ? trollRows : h('div', { class: 'note' }, 'Nobody else is here yet.'));
-  return [invSection, surprise, codes, mg, troll, voiceSection, ipSection];
+  return [invSection, surprise, codes, mg, pollMaker(), troll, voiceSection, ipSection];
 }
 
 /* ---- new space: the Owner can limit it to some roles ---- */
@@ -3322,8 +3325,73 @@ function burstAt(el, emoji, n = 8) {
 }
 function popConfetti() { if (bouncyOn()) { const run = FX_RUN.confetti; if (run) run(); } }
 
+/* ------------------------------------------------------------------ Polls */
+state.polls = []; state.unvoted = 0;
+function renderPollDot() { for (const id of ['railPollDot', 'headPollDot']) $(id).classList.toggle('hidden', !state.unvoted); }
+async function loadPolls() {
+  const r = await api('/polls');
+  state.polls = r.polls; state.unvoted = r.unvoted; renderPollDot();
+  if (document.getElementById('pollList')) drawPolls();
+}
+$('railPolls').onclick = $('headPolls').onclick = () => openPolls();
+function pollLeft(p) {
+  if (!p.open) return 'Closed';
+  if (!p.endsAt) return 'Open';
+  const m = Math.max(0, Math.ceil((p.endsAt - Date.now()) / 60000));
+  return m >= 120 ? `${Math.round(m / 60)}h left` : `${m} min left`;
+}
+function pollCard(p) {
+  const showRes = !p.open || p.mine || isOwner();
+  const top = Math.max(1, ...p.options.map((o) => o.count));
+  const rows = p.options.map((o) => {
+    const pct = p.total ? Math.round((o.count / p.total) * 100) : 0;
+    const mine = p.mine === o.id;
+    const b = h('button', { type: 'button', class: 'poll-opt' + (mine ? ' mine' : '') + (showRes && o.count === top && p.total ? ' lead' : ''), disabled: !p.open || null,
+      onclick: () => attempt(async () => { uiSound('pop'); await api(`/polls/${p.id}/vote`, 'POST', { option: o.id }); toast2('Vote saved'); await loadPolls(); }) },
+      showRes ? h('i', { class: 'poll-bar', style: `width:${pct}%` }) : null,
+      h('span', { class: 'poll-t' }, (mine ? '✓ ' : '') + o.text),
+      showRes ? h('span', { class: 'poll-n' }, `${o.count} · ${pct}%`) : null);
+    const voters = isOwner() && o.voters && o.voters.length ? h('div', { class: 'poll-voters' }, o.voters.join(', ')) : null;
+    return h('div', {}, b, voters);
+  });
+  const ownerBtns = isOwner() ? h('div', { class: 'poll-actions' },
+    p.open ? h('button', { type: 'button', class: 'btn small', onclick: () => attempt(async () => { await api(`/owner/polls/${p.id}/close`, 'POST'); await loadPolls(); }) }, 'Close poll') : null,
+    h('button', { type: 'button', class: 'btn danger small', onclick: () => attempt(async () => { if (!(await confirmBox('Delete this poll?', 'Its votes are lost.'))) return; await api(`/owner/polls/${p.id}`, 'DELETE'); await loadPolls(); }) }, 'Delete')) : null;
+  return h('article', { class: 'poll' + (p.open ? '' : ' closed') },
+    h('div', { class: 'poll-q' }, p.question),
+    h('div', { class: 'poll-meta' }, `${pollLeft(p)} · ${p.total} vote${p.total === 1 ? '' : 's'} · by ${p.by}${p.open && !p.mine ? ' · tap to vote' : p.open ? ' · tap another to change' : ''}`),
+    h('div', { class: 'poll-opts' }, rows), ownerBtns);
+}
+function drawPolls() {
+  const list = document.getElementById('pollList'); if (!list) return;
+  list.replaceChildren(...(state.polls.length ? state.polls.map(pollCard) : [h('div', { class: 'note' }, isOwner() ? 'No polls yet. Make one in the Owner Panel.' : 'No polls yet.')]));
+}
+function openPolls() {
+  const box = h('div', { class: 'modal polls' },
+    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('h2', {}, '📊 Polls'),
+    h('p', { class: 'rw-sub' }, 'Vote on what the Owner asks. You can change your vote while a poll is open.'),
+    isOwner() ? h('button', { type: 'button', class: 'btn primary small', style: 'margin-bottom:10px', onclick: () => { closeOverlay(); openOwnerPanel(); } }, '＋ New poll in Owner Panel') : null,
+    h('div', { id: 'pollList', class: 'poll-list' }));
+  openOverlay(box); drawPolls(); attempt(loadPolls);
+}
+function pollMaker() {
+  const q = h('input', { type: 'text', maxlength: 150, placeholder: 'Ask a question' });
+  const opts = h('textarea', { rows: 4, placeholder: 'One choice per line (2 to 8)' });
+  const mins = h('select', {}, ...[[0, 'No time limit'], [60, '1 hour'], [1440, '1 day'], [4320, '3 days'], [10080, '1 week']].map(([v, t]) => h('option', { value: v }, t)));
+  const box = h('section', {}, h('h4', {}, '📊 Polls'),
+    h('div', { class: 'note' }, 'Everyone gets a 📊 button and a dot until they vote. You see who voted for what.'),
+    h('label', {}, 'Question', q), h('label', {}, 'Choices', opts), h('label', {}, 'Closes after', mins),
+    h('button', { type: 'button', class: 'btn primary small', style: 'margin:8px 0', onclick: () => attempt(async () => {
+      await api('/owner/polls', 'POST', { question: q.value, options: opts.value.split('\n'), minutes: Number(mins.value) });
+      q.value = ''; opts.value = ''; toast2('Poll started. Everyone was told'); await loadPolls(); closeOverlay(); openPolls();
+    }) }, '📊 Start poll'),
+    h('button', { type: 'button', class: 'btn small', style: 'margin-left:8px', onclick: () => { closeOverlay(); openPolls(); } }, 'See results'));
+  return box;
+}
+
 /* ------------------------------------------------------------------ Arcade */
-$('railArcade').onclick = () => openArcade();
+$('railArcade').onclick = $('headArcade').onclick = () => openArcade();
 function openArcade() {
   const box = h('div', { class: 'modal arcade' });
   let stopFn = null;
@@ -3347,8 +3415,8 @@ function openArcade() {
       h('div', { class: 'ar-grid' }, card('🐹', 'Whack-a-Mole', '25 seconds. Hit them all!', whack), card('🧠', 'Memory Match', 'Find all 8 pairs', memory), card('⚡', 'Reaction Test', 'Tap the moment it turns green', reaction)),
       st ? h('div', { class: 'note' }, `You can earn up to ${st.cap} coins a day from reflex games. ${st.left} left today.`) : null,
       h('h4', {}, 'Coin games · bet your coins'),
-      h('div', { class: 'ar-grid' }, card('🪙', 'Coin Flip', 'Heads or tails: win 1.9x', coinflip, 'gold'), card('🎲', 'Lucky Dice', 'Pick a number: win 5.5x', dice, 'gold'), card('🎰', 'Slots', 'Match three to win big', slots, 'gold')),
-      h('div', { class: 'note' }, 'Play money only. Coins cannot be bought or cashed out. Bets are 1 to 500 coins.'));
+      h('div', { class: 'ar-grid' }, card('🃏', 'Blackjack', 'Beat the dealer to 21. Pays 3 to 2', blackjack, 'gold'), card('🎡', 'Roulette', 'Red, black or a number: up to 36x', roulette, 'gold'), card('🔼', 'Higher or Lower', 'Chain guesses, cash out any time', hilo, 'gold'), card('🪙', 'Coin Flip', 'Heads or tails: win 1.9x', coinflip, 'gold'), card('🎲', 'Lucky Dice', 'Pick a number: win 5.5x', dice, 'gold'), card('🎰', 'Slots', 'Match three to win big', slots, 'gold')),
+      h('div', { class: 'note' }, 'Play money only. Coins cannot be bought or cashed out. Bet as much as you like, up to the coins you have.'));
   }
 
   async function finish(game, run, score, extra, title, detail) {
@@ -3425,11 +3493,13 @@ function openArcade() {
   }
 
   // ---- coin games: the server decides every result ----
-  function betControls(max = 500) {
-    const input = h('input', { type: 'number', min: 1, max, value: 10, 'aria-label': 'Bet' });
-    const chips = [10, 50, 100, 500].map((n) => h('button', { type: 'button', class: 'btn small chip', onclick: () => { input.value = n; } }, n));
-    chips.push(h('button', { type: 'button', class: 'btn small chip', onclick: () => { input.value = Math.max(1, Math.min(max, state.eco ? state.eco.coins : 1)); } }, 'Max'));
-    return { el: h('div', { class: 'ar-bet' }, h('label', {}, 'Bet 🪙'), input, h('div', { class: 'ar-chips' }, chips)), get: () => Math.trunc(Number(input.value)) };
+  function betControls() {
+    const have = () => (state.eco ? state.eco.coins : 0);
+    const input = h('input', { type: 'number', min: 1, step: 1, value: Math.min(10, Math.max(1, have())), inputmode: 'numeric', 'aria-label': 'Bet' });
+    const set = (n) => { input.value = Math.max(1, Math.min(Math.max(1, have()), Math.floor(n))); };
+    const chips = [10, 100, 1000].map((n) => h('button', { type: 'button', class: 'btn small chip', onclick: () => set(n) }, n.toLocaleString('en-US')));
+    chips.push(h('button', { type: 'button', class: 'btn small chip', onclick: () => set(have() / 2) }, 'Half'), h('button', { type: 'button', class: 'btn small chip', onclick: () => set(have()) }, 'All in'));
+    return { el: h('div', { class: 'ar-bet' }, h('label', {}, 'Bet 🪙 (as much as you like, up to what you have)'), input, h('div', { class: 'ar-chips' }, chips)), get: () => Math.trunc(Number(input.value)) };
   }
   const settle = (r, msgEl, winText) => {
     takeEco(r); renderCoins(); setBal();
@@ -3437,6 +3507,85 @@ function openArcade() {
     msgEl.textContent = r.won ? winText + ` +${r.net} 🪙` : `No luck. -${r.bet} 🪙`;
     uiSound(r.won ? 'win' : 'lose'); if (r.won && r.net >= r.bet * 4) popConfetti(); else if (r.won) burstAt(msgEl, '🪙', 8);
   };
+
+
+  // ---- Blackjack ----
+  const pcard = (c, i) => { const hid = c === '??'; return h('div', { class: 'pcard' + (hid ? ' back' : '') + (/[♥♦]/.test(c) ? ' red' : ''), style: `--i:${i}` }, hid ? '' : [h('b', {}, c.slice(0, -1)), h('i', {}, c.slice(-1))]); };
+  async function blackjack() {
+    stop(); let busy = false, cur = null;
+    const dealerEl = h('div', { class: 'bj-hand' }), playerEl = h('div', { class: 'bj-hand' }), dT = h('b', {}, ''), pT = h('b', {}, '');
+    const msg = h('div', { class: 'ar-msg' }, 'Place your bet and deal!'), bet = betControls();
+    const dealBox = h('div', {}, bet.el), playBox = h('div', { class: 'ar-sides hidden' });
+    const dealBtn = h('button', { type: 'button', class: 'btn primary', onclick: () => act('deal', { bet: bet.get() }) }, 'Deal');
+    dealBox.append(dealBtn);
+    const hitB = h('button', { type: 'button', class: 'btn', onclick: () => act('hit') }, '➕ Hit'), standB = h('button', { type: 'button', class: 'btn', onclick: () => act('stand') }, '✋ Stand'), dblB = h('button', { type: 'button', class: 'btn', onclick: () => act('double') }, '✖2 Double');
+    playBox.append(hitB, standB, dblB);
+    const draw = (v) => { dealerEl.replaceChildren(...v.dealer.map(pcard)); playerEl.replaceChildren(...v.player.map(pcard)); dT.textContent = v.state === 'done' ? v.dealerTotal : '?'; pT.textContent = v.playerTotal; };
+    const mode = (playing) => { dealBox.classList.toggle('hidden', playing); playBox.classList.toggle('hidden', !playing); if (playing) dblB.classList.toggle('hidden', !cur.canDouble); };
+    async function act(what, body) {
+      if (busy) return; busy = true;
+      let v; try { v = await api('/arcade/blackjack/' + what, 'POST', body || {}); } catch (e) { toast(e.message); busy = false; if (what === 'deal') { try { const r = await api('/arcade/blackjack'); if (r.active) { cur = r; draw(r); mode(true); } } catch (x) { /* none */ } } return; }
+      cur = v; draw(v); uiSound(what === 'deal' ? 'flip' : 'pop'); if (v.coins != null) { takeEco(v); renderCoins(); setBal(); }
+      if (v.state === 'done') {
+        mode(false); const bust = v.result === 'lose' && v.playerTotal > 21;
+        const text = { blackjack: `Blackjack! +${v.net.toLocaleString('en-US')} 🪙`, win: `You win! +${v.net.toLocaleString('en-US')} 🪙`, push: 'Push. Your bet comes back.', lose: bust ? `Bust! -${v.bet.toLocaleString('en-US')} 🪙` : `Dealer wins. -${v.bet.toLocaleString('en-US')} 🪙` }[v.result];
+        msg.className = 'ar-msg ' + (v.won ? 'win' : v.result === 'push' ? '' : 'lose'); msg.textContent = text;
+        uiSound(v.won ? 'win' : v.result === 'push' ? 'pop' : 'lose'); if (v.result === 'blackjack') popConfetti(); else if (v.won) burstAt(msg, '🪙', 8);
+      } else { mode(true); msg.className = 'ar-msg'; msg.textContent = `Bet ${v.bet.toLocaleString('en-US')} 🪙. Hit, stand or double?`; }
+      busy = false;
+    }
+    shell('🃏 Blackjack', h('div', { class: 'bj-table' }, h('div', { class: 'bj-row' }, h('span', {}, 'Dealer ', dT), dealerEl), h('div', { class: 'bj-row' }, h('span', {}, 'You ', pT), playerEl)), msg, dealBox, playBox, h('div', { class: 'note' }, 'Dealer stands on 17. Blackjack pays 3 to 2. You can double on your first two cards.'));
+    try { const r = await api('/arcade/blackjack'); if (r.active) { cur = r; draw(r); mode(true); msg.textContent = `You have a hand open (bet ${r.bet.toLocaleString('en-US')} 🪙). Hit, stand or double?`; } } catch (e) { /* none */ }
+  }
+
+  // ---- Roulette ----
+  const RL_RED = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+  const rlColor = (n) => (n === 0 ? 'green' : RL_RED.includes(n) ? 'red' : 'black');
+  function roulette() {
+    stop(); let pick = 'red', busy = false;
+    const ball = h('div', { class: 'rl-ball green' }, '🎡');
+    const msg = h('div', { class: 'ar-msg' }, 'Pick a bet, place your coins, spin!'), bet = betControls();
+    const bets = [['red', '🔴 Red', 'x2'], ['black', '⚫ Black', 'x2'], ['even', 'Even', 'x2'], ['odd', 'Odd', 'x2'], ['low', '1 to 18', 'x2'], ['high', '19 to 36', 'x2'], ['d1', '1st 12', 'x3'], ['d2', '2nd 12', 'x3'], ['d3', '3rd 12', 'x3']];
+    const btns = bets.map(([id, label, pay]) => h('button', { type: 'button', class: 'btn side' + (id === pick ? ' on' : ''), onclick: (e) => choose(id, e.currentTarget) }, label, h('small', {}, ' ' + pay)));
+    const num = h('input', { type: 'number', min: 0, max: 36, value: 17, 'aria-label': 'Number' });
+    const numBtn = h('button', { type: 'button', class: 'btn side', onclick: (e) => choose('n' + Math.max(0, Math.min(36, Math.floor(Number(num.value) || 0))), e.currentTarget) }, 'Number', h('small', {}, ' x36'));
+    function choose(id, el) { pick = id; btns.concat(numBtn).forEach((b) => b.classList.remove('on')); el.classList.add('on'); }
+    const go = h('button', { type: 'button', class: 'btn primary', onclick: async () => {
+      if (busy) return; busy = true; go.disabled = true; msg.className = 'ar-msg'; msg.textContent = 'No more bets…';
+      let r; try { r = await api('/arcade/roulette', 'POST', { bet: bet.get(), pick }); } catch (e) { toast(e.message); busy = false; go.disabled = false; msg.textContent = ''; return; }
+      ball.classList.add('spinning'); const t = setInterval(() => { const n = rand(0, 36); ball.textContent = n; ball.className = 'rl-ball spinning ' + rlColor(n); uiSound('spin'); }, 90);
+      await sleep(calmMotion() ? 100 : 1700); clearInterval(t); ball.className = 'rl-ball ' + r.color; ball.textContent = r.result; uiSound('pop');
+      settle(r, msg, `${r.result} ${r.color}! x${r.mult}`); busy = false; go.disabled = false;
+    } }, 'Spin!');
+    shell('🎡 Roulette', ball, h('div', { class: 'ar-sides' }, btns, h('span', { class: 'rl-num' }, num, numBtn)), bet.el, go, msg, h('div', { class: 'note' }, 'One zero. Even-money bets pay 2x your bet back, dozens 3x and a single number 36x. Zero beats every bet except a number.'));
+  }
+
+  // ---- Higher or Lower ----
+  async function hilo() {
+    stop(); let busy = false, cur = null;
+    const cardEl = h('div', { class: 'pcard big' }), info = h('div', { class: 'hl-info' }), msg = h('div', { class: 'ar-msg' }, 'Place a bet to draw the first card.'), bet = betControls();
+    const dealBox = h('div', {}, bet.el), playBox = h('div', { class: 'hidden' });
+    const dealBtn = h('button', { type: 'button', class: 'btn primary', onclick: () => act('deal', { bet: bet.get() }) }, 'Draw a card'); dealBox.append(dealBtn);
+    const hiB = h('button', { type: 'button', class: 'btn', onclick: () => act('guess', { dir: 'higher' }) }, '🔼 Higher'), loB = h('button', { type: 'button', class: 'btn', onclick: () => act('guess', { dir: 'lower' }) }, '🔽 Lower'), outB = h('button', { type: 'button', class: 'btn primary small', onclick: () => act('cashout') }, 'Cash out');
+    playBox.append(h('div', { class: 'ar-sides' }, hiB, loB), outB);
+    const show = (label) => { cardEl.replaceChildren(h('b', {}, label.slice(0, -1)), h('i', {}, label.slice(-1))); cardEl.classList.toggle('red', /[♥♦]/.test(label)); cardEl.classList.remove('flipin'); void cardEl.offsetWidth; cardEl.classList.add('flipin'); };
+    const mode = (playing) => { dealBox.classList.toggle('hidden', playing); playBox.classList.toggle('hidden', !playing); };
+    const paint = (v) => { show(v.card); hiB.disabled = !v.options.higher; loB.disabled = !v.options.lower; hiB.textContent = '🔼 Higher' + (v.options.higher ? ` x${v.options.higher}` : ''); loB.textContent = '🔽 Lower' + (v.options.lower ? ` x${v.options.lower}` : ''); outB.disabled = v.streak < 1; outB.textContent = `Cash out ${v.payout.toLocaleString('en-US')} 🪙`; info.textContent = `Bet ${v.bet.toLocaleString('en-US')} 🪙 · streak ${v.streak} · now x${v.mult}`; };
+    async function act(what, body) {
+      if (busy) return; busy = true;
+      let v; try { v = await api('/arcade/hilo/' + what, 'POST', body || {}); } catch (e) { toast(e.message); busy = false; return; }
+      if (v.coins != null) { takeEco(v); renderCoins(); setBal(); }
+      if (v.active) { cur = v; paint(v); mode(true); uiSound(what === 'deal' ? 'flip' : 'win'); msg.className = 'ar-msg' + (v.correct ? ' win' : ''); msg.textContent = v.correct ? `Right! It was ${v.prev}. Keep going or cash out.` : 'Higher or lower?'; }
+      else {
+        mode(false); info.textContent = ''; if (v.card) show(v.card);
+        if (v.lost) { msg.className = 'ar-msg lose'; msg.textContent = `Wrong, it was ${v.card}. -${v.bet.toLocaleString('en-US')} 🪙`; uiSound('lose'); }
+        else { msg.className = 'ar-msg win'; msg.textContent = `Cashed out +${v.net.toLocaleString('en-US')} 🪙`; uiSound('win'); if (v.net >= v.bet * 3) popConfetti(); else burstAt(msg, '🪙', 8); }
+      }
+      busy = false;
+    }
+    shell('🔼 Higher or Lower', cardEl, info, msg, dealBox, playBox, h('div', { class: 'note' }, 'Guess if the next card is higher or lower (a tie loses). Each right guess multiplies your payout. Aces are low, kings are high.'));
+    try { const r = await api('/arcade/hilo'); if (r.active) { cur = r; paint(r); mode(true); msg.textContent = 'You have a round open. Higher or lower?'; } } catch (e) { /* none */ }
+  }
 
   function coinflip() {
     stop(); let pick = 'heads', busy = false;

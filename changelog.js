@@ -94,4 +94,9 @@ module.exports = [
     'Admins now have their own Admin Panel (🛠️) next to the ⚡ Command Center: find members and change their role, mute or remove them, handle reports, edit AutoMod words, post announcements and see recent staff actions',
     'Better panels: the Troll Panel is sorted into Scary, Fake system screens and Shake it up, and the Owner, Community and Troll panels are roomier, with a close button that stays put and quick-jump chips to hop between sections',
   ] },
+  { id: 'v17', date: '2026-10-12', title: 'Polls and more casino games', notes: [
+    'Polls: the Owner can start a poll (Owner Panel > Polls) and everyone votes from the new 📊 button. A dot shows until you vote, you can change your vote while it is open, and results show as live bars',
+    'Three new coin games in the Arcade: Blackjack (blackjack pays 3 to 2, double down), Roulette (colors, odd or even, dozens or a single number) and Higher or Lower (keep guessing to build a streak, cash out any time)',
+    'Bet as much as you want: every coin game now lets you bet any amount up to what you have, with quick buttons for Half and All in',
+  ] },
 ];
