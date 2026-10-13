@@ -99,6 +99,9 @@ const SKINS = {
   forest: ['Forest', ['#0a120e', '#192b23', '#3fbf7f']],
   ember: ['Ember', ['#100905', '#2c1b14', '#ff7a3d']],
   ocean: ['Ocean', ['#050d15', '#12263a', '#2fa8ff']],
+  candy: ['Candy', ['#2a1030', '#4a1d52', '#ff5fb0']],
+  mint: ['Mint', ['#0b1f1d', '#17403a', '#4cf2c4']],
+  galaxy: ['Galaxy', ['#070818', '#171a45', '#7c8cff']],
 };
 function pref(key, value) {
   try { if (value === undefined) return localStorage.getItem(key); if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (e) { /* storage unavailable */ }
@@ -168,8 +171,24 @@ function fmtStamp(ts) {
 
 /* ---------------------------------------------------------------- modals */
 
+// Long panels get a row of jump chips under the title so you can hop to any section.
+function panelNav(panel) {
+  let sig = '';
+  const build = () => {
+    const secs = [...panel.querySelectorAll(':scope > section, :scope > div > section')].filter((x) => x.querySelector(':scope > h4'));
+    const key = secs.map((x) => x.querySelector(':scope > h4').textContent).join('|');
+    if (key === sig || secs.length < 4) { if (secs.length < 4) { const old = panel.querySelector('.pnav'); if (old) old.remove(); sig = ''; } return; }
+    sig = key; const old = panel.querySelector('.pnav'); if (old) old.remove();
+    const nav = h('div', { class: 'pnav' }, secs.map((x) => { const t = x.querySelector(':scope > h4').textContent.trim(); return h('button', { type: 'button', class: 'pchip', onclick: () => { x.scrollIntoView({ behavior: calmMotion() ? 'auto' : 'smooth', block: 'start' }); x.classList.remove('flash'); void x.offsetWidth; x.classList.add('flash'); } }, t); }));
+    const first = secs[0]; first.parentNode.insertBefore(nav, first);
+  };
+  const mo = new MutationObserver(() => { if (!panel.isConnected) return mo.disconnect(); build(); });
+  mo.observe(panel, { childList: true, subtree: true });
+  setTimeout(build, 0);
+}
 function closeOverlay() { $('overlay').classList.add('hidden'); $('overlay').replaceChildren(); }
 function openOverlay(node, dismissable = true) {
+  if (node && node.classList && node.classList.contains('ownerp')) panelNav(node);
   const o = $('overlay');
   o.replaceChildren(node);
   o.classList.remove('hidden');
@@ -323,6 +342,7 @@ function connectWs() {
       if (m.msg.channelId === state.channelId) {
         state.messages.push(m.msg);
         appendMessage(m.msg);
+        if (m.msg.userId !== state.me) uiSound('recv');
         if (document.hidden && m.msg.userId !== state.me && mentionsMe(m.msg)) { state.hiddenPings++; updateTitle(); }
       } else if (m.msg.userId !== state.me) {
         const u = (state.unread[m.msg.channelId] = state.unread[m.msg.channelId] || { n: 0, m: 0 });
@@ -448,6 +468,7 @@ function renderChrome() {
   $('commBtn').classList.toggle('hidden', !(state.perks && state.perks.community));
   $('trollBtn').classList.toggle('hidden', !(state.perks && state.perks.troll));
   $('adminBtn').classList.toggle('hidden', !isAdmin());
+  $('adminPanelBtn').classList.toggle('hidden', !isAdmin());
   $('staffBtn').classList.toggle('hidden', isAdmin() || !hasStaffPerm());
 
   const list = $('channelList');
@@ -570,7 +591,7 @@ function closePicker() { if (pickerEl) { pickerEl.remove(); pickerEl = null; } }
 function openPicker(anchor, msg) {
   closePicker();
   pickerEl = h('div', { class: 'picker' }, EMOJI.map((e) =>
-    h('button', { type: 'button', onclick: () => { closePicker(); attempt(() => api(`/messages/${msg.id}/reactions`, 'PUT', { emoji: e })); } }, e)));
+    h('button', { type: 'button', onclick: (ev) => { burstAt(ev.currentTarget, e); uiSound('pop'); closePicker(); attempt(() => api(`/messages/${msg.id}/reactions`, 'PUT', { emoji: e })); } }, e)));
   document.body.append(pickerEl);
   const r = anchor.getBoundingClientRect();
   pickerEl.style.left = Math.max(8, Math.min(r.right - 220, window.innerWidth - 228)) + 'px';
@@ -656,7 +677,7 @@ function messageNode(msg, prev) {
         h('button', {
           class: 'react' + (ids.includes(state.me) ? ' mine' : ''),
           title: ids.map((id) => (userById(id) || { username: 'someone' }).username).join(', '),
-          onclick: () => attempt(() => api(`/messages/${msg.id}/reactions`, 'PUT', { emoji })),
+          onclick: (ev) => { if (!ids.includes(state.me)) { burstAt(ev.currentTarget, emoji); uiSound('pop'); } attempt(() => api(`/messages/${msg.id}/reactions`, 'PUT', { emoji })); },
         }, h('span', {}, emoji), h('span', { class: 'rc' }, ids.length))))
     : null;
 
@@ -703,7 +724,9 @@ function appendMessage(msg) {
   const stick = nearBottom(box) || msg.userId === state.me;
   if (box.querySelector('.empty')) box.replaceChildren();
   const prev = state.messages[state.messages.length - 2];
-  box.append(messageNode(msg, prev));
+  const node = messageNode(msg, prev);
+  if (!calmMotion()) node.classList.add('fresh');
+  box.append(node);
   if (stick) box.scrollTop = box.scrollHeight;
 }
 
@@ -804,6 +827,7 @@ $('msgInput').addEventListener('keydown', async (e) => {
   clearReply();
   const ok = await attempt(() => api(`/channels/${state.channelId}/messages`, 'POST', { content: slash(content), image, replyTo }));
   if (!ok) input.value = content;
+  else { uiSound('send'); if (/🎉|🥳|🎊/.test(content)) { burstAt($('msgInput'), '🎉', 14); popConfetti(); } }
 });
 
 /* ------------------------------------------------------------- channels */
@@ -967,6 +991,9 @@ function renderAppearanceTab(el) {
           h('span', { class: 'sn' }, label))))),
     h('div', { class: 'field' }, h('label', {}, 'ACCENT COLOR'), accent,
       h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn small', onclick: () => { pref('accent', null); applySkin(); openSettings('look'); } }, 'Reset to theme'))),
+    h('div', { class: 'field' }, h('label', {}, 'SOUNDS AND EFFECTS'),
+      h('label', { class: 'own-check' }, h('input', { type: 'checkbox', checked: soundsOn(), onchange: (e) => { pref('sounds', e.target.checked ? null : 'off'); if (e.target.checked) uiSound('win'); } }), ' Soft click, message and coin sounds'),
+      h('label', { class: 'own-check' }, h('input', { type: 'checkbox', checked: bouncyOn(), onchange: (e) => { pref('bouncy', e.target.checked ? null : 'off'); applyBouncy(); } }), ' Bouncy animations and sparkles')),
     h('div', { class: 'field' }, h('label', {}, 'PRANKS'),
       h('label', { class: 'own-check' }, h('input', { type: 'checkbox', checked: pranksOn(), onchange: (e) => pref('pranks', e.target.checked ? null : 'off') }), ' Allow scary screen pranks from the Troll Panel (jump scares, spiders, lights out...)')),
     HALLOWEEN_END > Date.now() ? h('div', { class: 'field' }, h('label', {}, '🎃 HALLOWEEN'),
@@ -1485,7 +1512,10 @@ const spinWait = () => (state.eco && state.eco.nextSpinAt ? Math.max(0, state.ec
 function renderCoins() {
   const b = $('coinBtn');
   if (!b || !state.eco) return;
-  b.replaceChildren(h('span', { class: 'coin-ico' }, '🛍️'), h('span', { class: 'coin-lbl' }, 'Shop'), h('span', { class: 'coin-n' }, '🪙 ' + state.eco.coins));
+  const prevCoins = renderCoins.last; renderCoins.last = state.eco.coins;
+  const nEl = h('span', { class: 'coin-n' }, '🪙 ' + state.eco.coins);
+  if (prevCoins != null && prevCoins !== state.eco.coins && !calmMotion()) { nEl.classList.add('bump'); if (state.eco.coins > prevCoins) uiSound('coin'); }
+  b.replaceChildren(h('span', { class: 'coin-ico' }, '🛍️'), h('span', { class: 'coin-lbl' }, 'Shop'), nEl);
   b.classList.toggle('ready', spinWait() === 0);
   b.classList.toggle('hot', liveEvents().length > 0);
   b.title = spinWait() === 0 ? 'Shop: your daily spin is ready!' : 'Shop: coins, wheel and tag packs';
@@ -2364,7 +2394,7 @@ $('authAgree').addEventListener('change', () => { $('authBtn').disabled = regist
 /* ---- pranks sent from the Troll Panel (people can switch them off in Settings > Appearance) ---- */
 const pranksOn = () => pref('pranks') !== 'off';
 const calmMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-const FX_NAMES = { jumpscare: 'a jump scare', blackout: 'lights out', spiders: 'a spider swarm', blood: 'blood', crack: 'a cracked screen', glitch: 'a glitch', eyes: 'creepy eyes', haunt: 'a haunting', hacked: 'a fake hack alert', shake: 'an earthquake', flip: 'a flip', zombie: 'zombie hands', confetti: 'confetti' };
+const FX_NAMES = { jumpscare: 'a jump scare', blackout: 'lights out', spiders: 'a spider swarm', blood: 'blood', crack: 'a cracked screen', glitch: 'a glitch', eyes: 'creepy eyes', haunt: 'a haunting', hacked: 'a fake hack alert', shake: 'an earthquake', flip: 'a flip', zombie: 'zombie hands', confetti: 'confetti', peeker: 'a peeking figure', flicker: 'flickering lights', possessed: 'a possessed screen', whispers: 'whispers', fakeban: 'a fake ban notice', fakeupdate: 'a fake update', fakedelete: 'a fake delete-everything', virus: 'fake virus pop-ups', chaosintro: 'CHAOS' };
 
 /* Scary sounds made with the browser's own audio (no files). Kept at a moderate volume. */
 let audioCtx = null;
@@ -2384,6 +2414,8 @@ function scareSound(kind) {
     else if (kind === 'creak') { tone('sawtooth', 140, 60, 1.4, 0.18); tone('sawtooth', 150, 70, 1.2, 0.12, 0.2); }
     else if (kind === 'laugh') { for (let i = 0; i < 5; i++) tone('sawtooth', 420 - i * 35, 300 - i * 30, 0.16, 0.35, i * 0.22); tone('sine', 60, 40, 1.2, 0.5); }
     else if (kind === 'whisper') { hiss(1.6, 1800, 0.25); hiss(1.2, 2600, 0.2, 0.6); }
+    else if (kind === 'buzz') { tone('square', 100, 96, 0.9, 0.16); tone('sawtooth', 50, 48, 0.9, 0.2); hiss(0.9, 6000, 0.15); }
+    else if (kind === 'ding') { tone('sine', 1320, 1320, 0.5, 0.3); tone('sine', 1760, 1760, 0.7, 0.2, 0.12); }
     else if (kind === 'alarm') { for (let i = 0; i < 6; i++) tone('square', i % 2 ? 880 : 660, i % 2 ? 880 : 660, 0.18, 0.25, i * 0.2); }
   } catch (e) { /* no audio available */ }
 }
@@ -2502,6 +2534,57 @@ const FX_RUN = {
     let n = 3; fxLater(() => { const tick = () => { count.textContent = n; if (n-- > 0) { scareSound('thud'); fxLater(tick, 900); } else { layer.querySelector('.fx-hack').replaceChildren(h('div', { class: 'fx-jk' }, '😈 JUST KIDDING!'), h('small', {}, 'Nothing happened. Your account is safe. Click anywhere to close.')); scareSound('laugh'); } }; tick(); }, 4800);
     layer.addEventListener('click', fxStopAll);
   },
+  peeker(secs) {
+    const layer = fxLayer(secs), NS = 'http://www.w3.org/2000/svg';
+    const f = h('div', { class: 'fx-peek', style: `left:${frnd(25, 65)}%;--t:${secs}s` });
+    f.innerHTML = `<svg viewBox="0 0 160 200" xmlns="${NS}"><ellipse cx="80" cy="110" rx="62" ry="86" fill="#d9ddd0" stroke="#000" stroke-width="3"/><ellipse cx="54" cy="92" rx="17" ry="24" fill="#000"/><ellipse cx="106" cy="92" rx="17" ry="24" fill="#000"/><circle cx="54" cy="96" r="4" fill="#fff"/><circle cx="106" cy="96" r="4" fill="#fff"/><path d="M48 150Q80 178 112 150" stroke="#000" stroke-width="3.5" fill="none" stroke-linecap="round"/><path d="M60 40Q80 20 100 40" stroke="#555" stroke-width="3" fill="none"/></svg>`;
+    layer.append(h('div', { class: 'fx-cold' }), f);
+    scareSound('creak'); fxLater(() => scareSound('whisper'), 1600); fxLater(() => scareSound('heart'), 2600);
+  },
+  flicker(secs) {
+    const layer = fxLayer(secs, false), dark = h('div', { class: 'fx-flick' });
+    layer.append(dark, h('div', { class: 'fx-iseeyou' }, 'I SEE YOU'));
+    scareSound('buzz'); fxLater(() => scareSound('buzz'), 1800); fxLater(() => scareSound('heart'), 3000);
+  },
+  possessed(secs) {
+    fxClass('fx-possessed', secs);
+    const layer = fxLayer(secs), words = ['HELP ME', 'LET ME OUT', 'IT HURTS', 'BEHIND YOU', 'DON’T LOOK'];
+    for (let i = 0; i < 7; i++) layer.append(h('span', { class: 'fx-curse', style: `left:${frnd(3, 80)}%;top:${frnd(5, 88)}%;animation-delay:${frnd(0, secs * 0.6)}s;font-size:${frnd(20, 54)}px` }, words[i % words.length]));
+    scareSound('heart'); scareSound('static'); fxLater(() => scareSound('laugh'), 2200);
+  },
+  whispers(secs) {
+    const layer = fxLayer(secs), phrases = ['behind you', 'don’t turn around', 'I’m in the walls', 'we can see you', 'why are you still here?', 'it’s getting closer', 'look up'];
+    phrases.forEach((t, i) => layer.append(h('span', { class: 'fx-whisper', style: `left:${frnd(4, 70)}%;top:${frnd(8, 85)}%;animation-delay:${i * (secs / 9)}s` }, t)));
+    layer.append(h('div', { class: 'fx-cold' })); scareSound('whisper'); fxLater(() => scareSound('whisper'), 2000); fxLater(() => scareSound('creak'), 3500);
+  },
+  fakeban(secs) {
+    const layer = fxLayer(Math.max(secs, 7), true), sub = h('small', {}, 'Appeals take 4 to 6 business years.'), btn = h('button', { type: 'button', class: 'fx-fbtn' }, 'Appeal');
+    layer.append(h('div', { class: 'fx-fakeban' }, h('div', { class: 'fx-fico' }, '🔨'), h('b', {}, 'You have been banned from Warms'), h('p', {}, 'Reason: being a little too awesome.'), sub, btn)); scareSound('thud'); fxLater(() => scareSound('alarm'), 300);
+    btn.onclick = (e) => { e.stopPropagation(); btn.disabled = true; btn.textContent = 'Appeal denied ❌'; sub.textContent = '…'; fxLater(() => { layer.querySelector('.fx-fakeban').replaceChildren(h('div', { class: 'fx-jk' }, '😈 JUST KIDDING!'), h('small', {}, 'You are not banned. Click anywhere to close.')); scareSound('laugh'); }, 1600); };
+    layer.addEventListener('click', (e) => { if (!layer.querySelector('.fx-fbtn')) fxStopAll(); });
+  },
+  fakeupdate(secs) {
+    const layer = fxLayer(Math.max(secs, 9), true), pct = h('div', { class: 'fx-upct' }, '0%'), bar = h('i', {});
+    layer.append(h('div', { class: 'fx-update' }, h('div', { class: 'fx-spin' }), h('b', {}, 'Installing update 37 of 37'), pct, h('div', { class: 'fx-bar big' }, bar), h('small', {}, 'Please do not close this tab. Your computer will restart several times.')));
+    let p = 0; const tick = () => { p += p < 70 ? 6 : p < 90 ? 2 : 0.4; if (p >= 99) { p = 99; pct.textContent = '99%'; bar.style.width = '99%'; fxLater(() => { layer.querySelector('.fx-update').replaceChildren(h('div', { class: 'fx-jk' }, '😈 JUST KIDDING!'), h('small', {}, 'Nothing was installed. Click anywhere to close.')); scareSound('laugh'); }, 2600); return; } pct.textContent = Math.floor(p) + '%'; bar.style.width = p + '%'; fxLater(tick, 330); };
+    tick(); layer.addEventListener('click', (e) => { if (!layer.querySelector('.fx-update')) fxStopAll(); });
+  },
+  fakedelete(secs) {
+    const layer = fxLayer(Math.max(secs, 8), true), num = h('b', { class: 'fx-bignum' }, '0'), what = h('div', { class: 'fx-del-what' }, 'Deleting all messages…');
+    layer.append(h('div', { class: 'fx-fakedel' }, h('div', { class: 'fx-fico' }, '🗑️'), what, num, h('small', {}, 'messages permanently removed')));
+    scareSound('alarm'); let n = 0; const tick = () => { n += Math.floor(frnd(800, 4200)); num.textContent = n.toLocaleString('en-US'); if (n < 52000) fxLater(tick, 180); else { what.textContent = 'Deleting friends…'; scareSound('thud'); fxLater(() => { layer.querySelector('.fx-fakedel').replaceChildren(h('div', { class: 'fx-jk' }, '😈 JUST KIDDING!'), h('small', {}, 'Nothing was deleted. Click anywhere to close.')); scareSound('laugh'); }, 1500); } };
+    tick(); layer.addEventListener('click', (e) => { if (layer.querySelector('.fx-jk')) fxStopAll(); });
+  },
+  virus(secs) {
+    const layer = fxLayer(Math.max(secs, 9)), msgs = ['⚠ Your Warms has 37 viruses!', '🦠 A virus is eating your messages!', '⚠ Your coins are in danger!', '🔥 System overheating!', '☠ Click OK to remove all viruses', '👀 Someone is watching your screen'];
+    scareSound('alarm');
+    msgs.forEach((t, i) => fxLater(() => {
+      const w = h('div', { class: 'fx-win', style: `left:${frnd(4, 60)}%;top:${frnd(6, 66)}%` }, h('div', { class: 'fx-wbar' }, 'Warning!', h('span', {}, '✕')), h('div', { class: 'fx-wbody' }, t, h('div', {}, h('button', { type: 'button' }, 'OK'), h('button', { type: 'button' }, 'Remove virus'))));
+      w.addEventListener('click', (e) => { if (e.target.closest('button') || e.target.closest('.fx-wbar span')) { w.remove(); scareSound('ding'); } });
+      layer.append(w); scareSound('ding');
+    }, i * 700));
+  },
+  chaosintro() { scareSound('alarm'); fxClass('fx-quake', 1.2); const layer = fxLayer(2.4); layer.append(h('div', { class: 'fx-chaos' }, '💀 CHAOS 💀')); },
   shake(secs) { fxClass('fx-quake', secs); scareSound('thud'); fxLater(() => scareSound('thud'), 600); },
   flip(secs) { fxClass('fx-flip', secs); },
   zombie(secs) {
@@ -2523,9 +2606,12 @@ function openTrollPanel() {
   const target = h('select', { 'aria-label': 'Who gets it' }, h('option', { value: 'all' }, '👥 Everyone'),
     state.users.filter((u) => u.id !== state.me).map((u) => h('option', { value: u.id }, u.username)));
   const secs = h('select', { 'aria-label': 'How long' }, [[5, '5 seconds'], [8, '8 seconds'], [12, '12 seconds'], [20, '20 seconds']].map(([v, l]) => h('option', { value: v, selected: v === 8 }, l)));
-  const fx = [['jumpscare', '👹', 'Jump scare'], ['blackout', '🔦', 'Lights out'], ['spiders', '🕷️', 'Spider swarm'], ['blood', '🩸', 'Blood drip'],
-    ['crack', '💥', 'Cracked screen'], ['glitch', '📺', 'Glitch and crash'], ['eyes', '👁️', 'Creepy eyes'], ['haunt', '👻', 'Haunting'],
-    ['hacked', '💻', 'Fake hack alert'], ['zombie', '🧟', 'Zombie hands'], ['shake', '🌋', 'Earthquake'], ['flip', '🙃', 'Flip upside down']];
+  const GROUPS = [
+    ['😱 Scary', [['jumpscare', '👹', 'Jump scare'], ['blackout', '🔦', 'Lights out'], ['spiders', '🕷️', 'Spider swarm'], ['blood', '🩸', 'Blood drip'], ['eyes', '👁️', 'Creepy eyes'], ['haunt', '👻', 'Haunting'], ['zombie', '🧟', 'Zombie hands'], ['peeker', '🫥', 'Peeking figure'], ['flicker', '💡', 'Flickering lights'], ['possessed', '😈', 'Possessed screen'], ['whispers', '🗣️', 'Whispers']]],
+    ['💻 Fake system screens', [['glitch', '📺', 'Glitch and crash'], ['hacked', '💻', 'Fake hack alert'], ['fakeban', '🔨', 'Fake ban notice'], ['fakeupdate', '⬇️', 'Fake update'], ['fakedelete', '🗑️', 'Fake delete-everything'], ['virus', '🦠', 'Fake virus pop-ups']]],
+    ['🌀 Shake it up', [['crack', '💥', 'Cracked screen'], ['shake', '🌋', 'Earthquake'], ['flip', '🙃', 'Flip upside down']]],
+  ];
+  const fx = GROUPS.flatMap((g) => g[1]);
   const go = (id) => attempt(async () => {
     await api('/troll', 'POST', { effect: id, target: target.value, seconds: Number(secs.value) });
     toast2('🎭 Sent!');
@@ -2535,9 +2621,13 @@ function openTrollPanel() {
     h('div', { class: 'own-crown' }, '🎭'),
     h('h2', {}, 'Troll Panel'),
     h('p', { class: 'own-sub' }, 'Spooky pranks with sound. They only show on screen and never change anyone’s data. People can press Esc to stop one, or turn pranks off in their settings.'),
-    h('div', { class: 'tr-row' }, h('label', {}, 'Who'), target, h('label', {}, 'For'), secs),
-    h('div', { class: 'tr-grid' }, fx.map(([id, ic, name]) => h('button', { type: 'button', class: 'tr-btn', onclick: () => go(id) }, h('span', { class: 'tr-ic' }, ic), name))),
-    h('button', { type: 'button', class: 'btn primary small tr-rand', onclick: () => go(fx[Math.floor(Math.random() * 9)][0]) }, '🎲 Random scare'),
+    h('div', { class: 'tr-row tr-sticky' }, h('label', {}, 'Who'), target, h('label', {}, 'For'), secs),
+    h('div', { class: 'tr-top' },
+      h('button', { type: 'button', class: 'btn small tr-chaos', onclick: () => go('chaos') }, '💀 CHAOS: four random pranks in a row'),
+      h('button', { type: 'button', class: 'btn small tr-rand', onclick: () => go(fx[Math.floor(Math.random() * fx.length)][0]) }, '🎲 Random')),
+    GROUPS.map(([title, list]) => h('section', { class: 'tr-group' }, h('h4', {}, title),
+      h('div', { class: 'tr-grid' }, list.map(([id, ic, name]) => h('button', { type: 'button', class: 'tr-btn', onclick: () => go(id) }, h('span', { class: 'tr-ic' }, ic), name))))),
+    h('div', { class: 'note' }, isOwner() ? 'As Owner you have no cooldowns.' : 'Trolling Everyone has a cooldown (45 seconds, 90 for CHAOS) so it stays fun.'),
     h('div', { class: 'note' }, 'Be kind: the server rules still apply to pranks too. Sound only plays if their browser allows it.')));
 }
 $('trollBtn').onclick = openTrollPanel;
@@ -2612,6 +2702,73 @@ function openMinigame() {
   intro();
   openOverlay(box);
 }
+
+
+/* ---- Admin Panel: a panel of its own for Admins (and the Owner) ---- */
+function openAdminPanel() {
+  if (!isAdmin()) return;
+  const body = h('div', {});
+  const panel = h('div', { class: 'ownerp panel-admin' },
+    h('button', { class: 'close', title: 'Close', onclick: closeOverlay }, '✕'),
+    h('div', { class: 'own-crown' }, '🛠️'),
+    h('h2', {}, 'Admin Panel'),
+    h('p', { class: 'own-sub' }, 'Members, reports, AutoMod and what staff did lately. ' + state.serverName),
+    body);
+  openOverlay(panel);
+  let search = '';
+  const load = async () => {
+    let d;
+    try { d = await api('/admin/panel'); } catch (e) { return toast(e.message); }
+    const top = panel.scrollTop;
+    const say = h('textarea', { rows: 2, maxlength: 300, placeholder: 'Announcement for #general…', 'aria-label': 'Announcement' });
+    const find = h('input', { type: 'text', placeholder: 'Find a member…', value: search, 'aria-label': 'Find a member', autocomplete: 'off' });
+    const list = h('div', { class: 'adm-members' });
+    const roleName = (id) => (d.roles.find((r) => r.id === id) || { name: id === 'owner' ? 'Owner' : id }).name;
+    const act = (fn, msg) => attempt(async () => { await fn(); await refresh(); if (msg) toast2(msg); load(); });
+    const drawMembers = () => {
+      const q = find.value.trim().toLowerCase(); search = find.value;
+      const rows = d.members.filter((m) => !q || m.username.toLowerCase().includes(q)).slice(0, 60);
+      list.replaceChildren(...(rows.length ? rows.map((m) => {
+        const roleSel = h('select', { 'aria-label': 'Role of ' + m.username, onchange: () => act(() => api(`/users/${m.id}/role`, 'PUT', { roleId: roleSel.value }), m.username + ' is now ' + roleName(roleSel.value)) },
+          d.roles.map((r) => h('option', { value: r.id, selected: r.id === m.roleId }, r.name)), m.roleId === 'owner' ? h('option', { value: 'owner', selected: true }, 'Owner') : null);
+        const muteSel = h('select', { 'aria-label': 'Mute ' + m.username, onchange: () => { const v = Number(muteSel.value); if (v >= 0) act(() => api(`/users/${m.id}/mute`, 'PUT', { minutes: v }), v ? m.username + ' was muted' : m.username + ' was unmuted'); } },
+          h('option', { value: -1 }, m.muted ? `Muted · ${m.muted}m left` : 'Mute…'), [[10, '10 minutes'], [60, '1 hour'], [1440, '1 day'], [10080, '1 week']].map(([v, l]) => h('option', { value: v }, l)), m.muted ? h('option', { value: 0 }, 'Unmute now') : null);
+        return h('div', { class: 'adm-row' },
+          h('div', { class: 'adm-who' }, h('i', { class: 'adm-dot' + (m.online ? ' on' : '') }), h('b', {}, m.username), m.id === d.me ? h('small', {}, ' (you)') : null, h('small', { class: 'adm-role' }, roleName(m.roleId))),
+          m.canManage ? h('div', { class: 'adm-ctl' }, roleSel, muteSel,
+            h('button', { type: 'button', class: 'btn small danger', onclick: async () => { if (await confirmBox('Remove ' + m.username + '?', 'Their account is deleted for good. They can sign up again later.', 'Remove')) act(() => api('/users/' + m.id, 'DELETE'), m.username + ' was removed'); } }, 'Remove'))
+            : h('small', { class: 'adm-lock' }, m.id === d.me ? '' : 'Same rank or higher'));
+      }) : [h('div', { class: 'note' }, 'Nobody matches.')]));
+    };
+    find.addEventListener('input', drawMembers); drawMembers();
+    const open = d.reports.filter((r) => !r.resolved);
+    const amWords = h('textarea', { rows: 2, placeholder: 'blocked words, separated by spaces or commas', 'aria-label': 'Blocked words' }); amWords.value = (d.automod.words || []).join(', ');
+    const amOn = h('input', { type: 'checkbox', checked: !!d.automod.enabled });
+    body.replaceChildren(
+      h('div', { class: 'own-stats' }, h('div', {}, h('b', {}, d.members.length), h('span', {}, 'members')), h('div', {}, h('b', {}, d.members.filter((m) => m.online).length), h('span', {}, 'online')), h('div', {}, h('b', {}, d.members.filter((m) => m.muted).length), h('span', {}, 'muted')), h('div', {}, h('b', {}, open.length), h('span', {}, 'open reports'))),
+      h('section', {}, h('h4', {}, '⚡ Command Center'), h('div', { class: 'note' }, 'Live stats, the admin console with commands, and the broadcast tool.'),
+        h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => { closeOverlay(); openCommandCenter(); } }, '⚡ Open Command Center')),
+      h('section', {}, h('h4', {}, '📣 Announce in #general'), say,
+        h('button', { class: 'btn primary small', style: 'margin-top:8px', onclick: () => attempt(async () => { await api('/community/announce', 'POST', { text: say.value }); say.value = ''; toast2('Posted in #general'); load(); }) }, 'Post announcement')),
+      h('section', {}, h('h4', {}, '👥 Members'), find, list, h('div', { class: 'note' }, 'You can change the role of, mute or remove people ranked below you. Role changes take effect right away.')),
+      h('section', {}, h('h4', {}, `🚩 Reports (${open.length} open)`),
+        d.reports.length ? d.reports.slice(0, 12).map((r) => h('div', { class: 'own-report' + (r.resolved ? ' done' : '') },
+          h('div', { class: 'rr-head' }, h('b', {}, r.username), h('span', { class: 'rr-kind' }, (REPORT_KINDS.find((k) => k[0] === r.kind) || [0, 'Other'])[1]), h('span', { class: 'time' }, fmtStamp(r.ts))),
+          h('div', { class: 'rr-msg' }, r.message),
+          h('div', { class: 'adm-ctl' }, h('button', { type: 'button', class: 'btn small', onclick: () => act(() => api(`/admin/reports/${r.id}/resolve`, 'POST'), r.resolved ? 'Reopened' : 'Marked as done') }, r.resolved ? 'Reopen' : '✓ Done'),
+            h('button', { type: 'button', class: 'btn small ghost', onclick: () => act(() => api('/admin/reports/' + r.id, 'DELETE'), 'Report deleted') }, 'Delete'))))
+          : h('div', { class: 'note' }, 'No reports.')),
+      h('section', {}, h('h4', {}, '🛡️ AutoMod'),
+        h('label', { class: 'own-check' }, amOn, ' Block the words below in chat (the sender gets a warning, then a timeout)'), amWords,
+        h('button', { class: 'btn small', style: 'margin-top:8px', onclick: () => act(() => api('/admin/automod', 'PUT', { enabled: amOn.checked, words: amWords.value.split(/[\s,]+/).filter(Boolean) }), 'AutoMod saved') }, 'Save AutoMod'),
+        d.automod.muted.length ? h('div', { class: 'note' }, 'Muted by AutoMod: ' + d.automod.muted.map((m) => `${m.username} (${m.minutes}m)`).join(', ')) : null),
+      h('section', {}, h('h4', {}, '📜 Recent staff actions'),
+        d.audit.length ? d.audit.map((a) => h('div', { class: 'own-row' }, h('span', { class: 'own-name' }, `${a.by}: ${a.text}`), h('span', { class: 'time' }, ago(a.ts)))) : h('div', { class: 'note' }, 'Nothing yet.')));
+    panel.scrollTop = top;
+  };
+  load();
+}
+$('adminPanelBtn').onclick = openAdminPanel;
 
 /* ---- Community Panel ---- */
 function openCommunityPanel() {
@@ -3122,6 +3279,214 @@ function renderVoice() {
   }
 }
 window.addEventListener('beforeunload', () => { if (V.room) wsSend({ t: 'voice-leave' }); });
+
+
+/* ------------------------------------------------- playful touches: sounds, bursts, bouncy motion */
+const soundsOn = () => pref('sounds') !== 'off';
+const bouncyOn = () => pref('bouncy') !== 'off' && !calmMotion();
+function applyBouncy() { document.body.classList.toggle('bouncy', bouncyOn()); }
+applyBouncy();
+let lastTick = 0;
+function uiSound(kind) {
+  if (!soundsOn()) return;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    if (kind === 'tick') { const n = performance.now(); if (n - lastTick < 60) return; lastTick = n; }
+    audioCtx = audioCtx || new AC(); const c = audioCtx;
+    if (c.state === 'suspended') { c.resume().catch(() => {}); if (c.state === 'suspended') return; }
+    const t0 = c.currentTime, master = c.createGain(); master.gain.value = 0.5; master.connect(c.destination);
+    const note = (f0, f1, dur, vol, at = 0, type = 'sine') => { const o = c.createOscillator(), g = c.createGain(); o.type = type; o.frequency.setValueAtTime(f0, t0 + at); o.frequency.exponentialRampToValueAtTime(Math.max(30, f1), t0 + at + dur); g.gain.setValueAtTime(0.0001, t0 + at); g.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur); o.connect(g); g.connect(master); o.start(t0 + at); o.stop(t0 + at + dur + 0.03); };
+    if (kind === 'tick') note(1000, 640, 0.05, 0.05, 0, 'triangle');
+    else if (kind === 'pop') note(480, 1000, 0.09, 0.12);
+    else if (kind === 'send') { note(420, 820, 0.11, 0.09); note(820, 1100, 0.08, 0.05, 0.07); }
+    else if (kind === 'recv') { note(700, 900, 0.1, 0.07); note(1050, 1050, 0.14, 0.05, 0.08); }
+    else if (kind === 'coin') { note(1250, 1650, 0.08, 0.09, 0, 'square'); note(1650, 1650, 0.2, 0.08, 0.07, 'square'); }
+    else if (kind === 'win') [523, 659, 784, 1046].forEach((f, i) => note(f, f, 0.22, 0.1, i * 0.09, 'triangle'));
+    else if (kind === 'lose') { note(330, 160, 0.4, 0.09, 0, 'sawtooth'); }
+    else if (kind === 'flip') note(280, 1400, 0.28, 0.06, 0, 'triangle');
+    else if (kind === 'whack') { note(220, 70, 0.14, 0.18); note(900, 400, 0.06, 0.08); }
+    else if (kind === 'spin') note(500 + Math.random() * 300, 300, 0.05, 0.04, 0, 'square');
+  } catch (e) { /* no audio available */ }
+}
+document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('button, .channel, .skin, .ar-card')) uiSound('tick'); }, true);
+
+// A little shower of emoji from an element (reactions, sent party messages...).
+function burstAt(el, emoji, n = 8) {
+  if (!bouncyOn() || !el || !el.getBoundingClientRect) return;
+  const r = el.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + Math.random() * 0.6, d = 36 + Math.random() * 46;
+    const sp = h('span', { class: 'burst', style: `left:${cx}px;top:${cy}px;--dx:${Math.cos(a) * d}px;--dy:${Math.sin(a) * d - 18}px;--rot:${(Math.random() - 0.5) * 120}deg;font-size:${14 + Math.random() * 10}px` }, emoji);
+    document.body.append(sp); setTimeout(() => sp.remove(), 900);
+  }
+}
+function popConfetti() { if (bouncyOn()) { const run = FX_RUN.confetti; if (run) run(); } }
+
+/* ------------------------------------------------------------------ Arcade */
+$('railArcade').onclick = () => openArcade();
+function openArcade() {
+  const box = h('div', { class: 'modal arcade' });
+  let stopFn = null;
+  const stop = () => { if (stopFn) { try { stopFn(); } catch (e) { /* done */ } stopFn = null; } };
+  const close = () => { stop(); closeOverlay(); };
+  const bal = () => '🪙 ' + (state.eco ? state.eco.coins : 0);
+  const back = h('button', { type: 'button', class: 'btn ghost small ar-back', onclick: () => home() }, '← Arcade');
+  const shell = (title, ...kids) => box.replaceChildren(h('div', { class: 'ar-top' }, back, h('b', { class: 'ar-bal', id: 'arBal' }, bal()), h('button', { class: 'close', title: 'Close', onclick: close }, '✕')), h('h2', {}, title), ...kids);
+  const setBal = () => { const e = document.getElementById('arBal'); if (e) { e.textContent = bal(); if (!calmMotion()) { e.classList.remove('bump'); void e.offsetWidth; e.classList.add('bump'); } } };
+  const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function home() {
+    stop();
+    let st = null; try { st = await api('/arcade'); takeEco(st); renderCoins(); } catch (e) { /* offline */ }
+    const card = (ic, name, desc, fn, cls) => h('button', { type: 'button', class: 'ar-card ' + (cls || ''), onclick: fn }, h('span', { class: 'ar-ic' }, ic), h('b', {}, name), h('small', {}, desc));
+    box.replaceChildren(
+      h('div', { class: 'ar-top' }, h('span', {}), h('b', { class: 'ar-bal', id: 'arBal' }, bal()), h('button', { class: 'close', title: 'Close', onclick: close }, '✕')),
+      h('h2', {}, '🕹️ Arcade'),
+      h('h4', {}, 'Reflex games · earn coins'),
+      h('div', { class: 'ar-grid' }, card('🐹', 'Whack-a-Mole', '25 seconds. Hit them all!', whack), card('🧠', 'Memory Match', 'Find all 8 pairs', memory), card('⚡', 'Reaction Test', 'Tap the moment it turns green', reaction)),
+      st ? h('div', { class: 'note' }, `You can earn up to ${st.cap} coins a day from reflex games. ${st.left} left today.`) : null,
+      h('h4', {}, 'Coin games · bet your coins'),
+      h('div', { class: 'ar-grid' }, card('🪙', 'Coin Flip', 'Heads or tails: win 1.9x', coinflip, 'gold'), card('🎲', 'Lucky Dice', 'Pick a number: win 5.5x', dice, 'gold'), card('🎰', 'Slots', 'Match three to win big', slots, 'gold')),
+      h('div', { class: 'note' }, 'Play money only. Coins cannot be bought or cashed out. Bets are 1 to 500 coins.'));
+  }
+
+  async function finish(game, run, score, extra, title, detail) {
+    let r; try { r = await api('/arcade/finish', 'POST', { game, id: run.id, score, extra }); } catch (e) { toast(e.message); return home(); }
+    takeEco(r); renderCoins();
+    const win = r.earned > 0;
+    if (win) { uiSound('win'); if (r.earned >= 25) popConfetti(); }
+    shell(title, h('div', { class: 'ar-result' }, h('div', { class: 'ar-big' }, win ? '+' + r.earned + ' 🪙' : '0 🪙'), h('div', {}, detail), r.note ? h('div', { class: 'note' }, r.note) : null, r.capped ? h('div', { class: 'note' }, 'You hit today’s reflex-game coin limit. Come back tomorrow!') : null),
+      h('div', { class: 'actions' }, h('button', { class: 'btn ghost small', onclick: home }, 'Menu'), h('button', { class: 'btn primary small', onclick: () => ({ whack, memory, reaction })[game]() }, 'Play again')));
+    setBal();
+  }
+
+  async function whack() {
+    stop(); let run; try { run = await api('/arcade/start', 'POST', { game: 'whack' }); } catch (e) { return toast(e.message); }
+    let score = 0, left = 25, active = -1, golden = false, over = false;
+    const holes = Array.from({ length: 9 }, (_, i) => h('button', { type: 'button', class: 'ar-hole', 'aria-label': 'hole ' + (i + 1), onclick: () => hit(i) }, h('span', { class: 'ar-mole' })));
+    const scoreEl = h('b', {}, '0'), timeEl = h('b', {}, '25');
+    shell('🐹 Whack-a-Mole', h('div', { class: 'ar-stats' }, h('span', {}, 'Score ', scoreEl), h('span', {}, 'Time ', timeEl)), h('div', { class: 'ar-holes' }, holes), h('div', { class: 'note' }, 'Moles are quick. 🌟 gold moles count 3!'));
+    let popT = 0, hideT = 0;
+    const hide = () => { if (active >= 0) { holes[active].classList.remove('up', 'gold'); holes[active].firstChild.textContent = ''; } active = -1; };
+    const pop = () => {
+      if (over) return; hide();
+      let i; do { i = rand(0, 8); } while (i === active);
+      active = i; golden = Math.random() < 0.12; holes[i].classList.add('up'); if (golden) holes[i].classList.add('gold'); holes[i].firstChild.textContent = golden ? '🌟' : '🐹';
+      const stay = Math.max(450, 900 - score * 12);
+      hideT = setTimeout(() => { hide(); popT = setTimeout(pop, rand(120, 380)); }, stay);
+    };
+    function hit(i) {
+      if (over || i !== active) return;
+      score += golden ? 3 : 1; scoreEl.textContent = score; uiSound('whack'); burstAt(holes[i], golden ? '⭐' : '💥', 6);
+      clearTimeout(hideT); hide(); popT = setTimeout(pop, rand(100, 300));
+    }
+    const tick = setInterval(() => { left--; timeEl.textContent = left; timeEl.classList.toggle('late', left <= 5); if (left <= 0) { over = true; clearInterval(tick); clearTimeout(popT); clearTimeout(hideT); stopFn = null; finish('whack', run, score, 0, '🐹 Whack-a-Mole', `You whacked ${score} point${score === 1 ? '' : 's'}!`); } }, 1000);
+    stopFn = () => { over = true; clearInterval(tick); clearTimeout(popT); clearTimeout(hideT); };
+    popT = setTimeout(pop, 600);
+  }
+
+  async function memory() {
+    stop(); let run; try { run = await api('/arcade/start', 'POST', { game: 'memory' }); } catch (e) { return toast(e.message); }
+    const faces = ['🍎', '🚀', '🐙', '🎸', '🌈', '🍩', '👾', '🦄'], deck = [...faces, ...faces].sort(() => Math.random() - 0.5);
+    let first = null, lock = false, moves = 0, found = 0; const movesEl = h('b', {}, '0');
+    const cards = deck.map((f, i) => h('button', { type: 'button', class: 'ar-mem', 'aria-label': 'card ' + (i + 1), onclick: () => flip(i) }, h('span', { class: 'mem-in' }, h('i', { class: 'mem-back' }, '?'), h('i', { class: 'mem-front' }, f))));
+    shell('🧠 Memory Match', h('div', { class: 'ar-stats' }, h('span', {}, 'Moves ', movesEl), h('span', {}, 'Pairs ', h('b', { id: 'memPairs' }, '0 / 8'))), h('div', { class: 'ar-memgrid' }, cards), h('div', { class: 'note' }, 'Fewer moves means more coins.'));
+    async function flip(i) {
+      const c = cards[i]; if (lock || c.classList.contains('open') || c.classList.contains('done')) return;
+      c.classList.add('open'); uiSound('flip');
+      if (first === null) { first = i; return; }
+      moves++; movesEl.textContent = moves; const a = first; first = null;
+      if (deck[a] === deck[i]) {
+        cards[a].classList.add('done'); c.classList.add('done'); found++; document.getElementById('memPairs').textContent = found + ' / 8'; uiSound('pop'); burstAt(c, '✨', 6);
+        if (found === 8) { await sleep(500); finish('memory', run, 0, moves, '🧠 Memory Match', `All pairs in ${moves} moves!`); }
+      } else { lock = true; await sleep(750); cards[a].classList.remove('open'); c.classList.remove('open'); lock = false; }
+    }
+  }
+
+  async function reaction() {
+    stop(); let run; try { run = await api('/arcade/start', 'POST', { game: 'reaction' }); } catch (e) { return toast(e.message); }
+    const times = []; let phase = 'idle', t0 = 0, timer = 0, dead = false;
+    const pad = h('button', { type: 'button', class: 'ar-react wait', onclick: press }, 'Tap to begin');
+    const roundEl = h('b', {}, '0 / 5');
+    shell('⚡ Reaction Test', h('div', { class: 'ar-stats' }, h('span', {}, 'Round ', roundEl), h('span', {}, 'Best ', h('b', { id: 'rxBest' }, '-'))), pad, h('div', { class: 'note' }, 'Wait for green, then tap as fast as you can. Tapping early restarts the round.'));
+    stopFn = () => { dead = true; clearTimeout(timer); };
+    function arm() { phase = 'wait'; pad.className = 'ar-react wait'; pad.textContent = 'Wait for green…'; timer = setTimeout(() => { if (dead) return; phase = 'go'; t0 = performance.now(); pad.className = 'ar-react go'; pad.textContent = 'TAP!'; }, rand(1300, 3400)); }
+    async function press() {
+      if (dead) return;
+      if (phase === 'idle') return arm();
+      if (phase === 'wait') { clearTimeout(timer); pad.className = 'ar-react early'; pad.textContent = 'Too soon! Tap to try again'; phase = 'idle'; uiSound('lose'); return; }
+      if (phase === 'go') {
+        const ms = Math.round(performance.now() - t0); times.push(ms); roundEl.textContent = times.length + ' / 5'; document.getElementById('rxBest').textContent = Math.min(...times) + ' ms'; uiSound('pop');
+        if (times.length >= 5) { phase = 'done'; dead = true; const avg = Math.round(times.reduce((a, b) => a + b, 0) / times.length); return finish('reaction', run, 0, avg, '⚡ Reaction Test', `Your average was ${avg} ms (${times.join(', ')}).`); }
+        phase = 'idle'; pad.className = 'ar-react wait'; pad.textContent = ms + ' ms. Tap for the next round';
+      }
+    }
+  }
+
+  // ---- coin games: the server decides every result ----
+  function betControls(max = 500) {
+    const input = h('input', { type: 'number', min: 1, max, value: 10, 'aria-label': 'Bet' });
+    const chips = [10, 50, 100, 500].map((n) => h('button', { type: 'button', class: 'btn small chip', onclick: () => { input.value = n; } }, n));
+    chips.push(h('button', { type: 'button', class: 'btn small chip', onclick: () => { input.value = Math.max(1, Math.min(max, state.eco ? state.eco.coins : 1)); } }, 'Max'));
+    return { el: h('div', { class: 'ar-bet' }, h('label', {}, 'Bet 🪙'), input, h('div', { class: 'ar-chips' }, chips)), get: () => Math.trunc(Number(input.value)) };
+  }
+  const settle = (r, msgEl, winText) => {
+    takeEco(r); renderCoins(); setBal();
+    msgEl.className = 'ar-msg ' + (r.won ? 'win' : 'lose');
+    msgEl.textContent = r.won ? winText + ` +${r.net} 🪙` : `No luck. -${r.bet} 🪙`;
+    uiSound(r.won ? 'win' : 'lose'); if (r.won && r.net >= r.bet * 4) popConfetti(); else if (r.won) burstAt(msgEl, '🪙', 8);
+  };
+
+  function coinflip() {
+    stop(); let pick = 'heads', busy = false;
+    const coin = h('div', { class: 'ar-coin' }, h('div', { class: 'ar-coin-in' }, h('i', { class: 'cf-h' }, '👑'), h('i', { class: 'cf-t' }, '🦅')));
+    const msg = h('div', { class: 'ar-msg' }, 'Pick a side, place your bet, flip!'), bet = betControls();
+    const sides = ['heads', 'tails'].map((sd) => h('button', { type: 'button', class: 'btn small side' + (sd === pick ? ' on' : ''), onclick: (e) => { pick = sd; sides.forEach((b) => b.classList.remove('on')); e.currentTarget.classList.add('on'); } }, sd === 'heads' ? '👑 Heads' : '🦅 Tails'));
+    const go = h('button', { type: 'button', class: 'btn primary', onclick: async () => {
+      if (busy) return; busy = true; go.disabled = true; msg.className = 'ar-msg'; msg.textContent = 'Flipping…';
+      let r; try { r = await api('/arcade/coinflip', 'POST', { bet: bet.get(), pick }); } catch (e) { toast(e.message); busy = false; go.disabled = false; msg.textContent = ''; return; }
+      uiSound('flip'); coin.firstChild.style.setProperty('--end', r.result === 'heads' ? '1800deg' : '1980deg'); coin.classList.remove('spin'); void coin.offsetWidth; coin.classList.add('spin');
+      await sleep(calmMotion() ? 100 : 1250); settle(r, msg, `It's ${r.result}!`); busy = false; go.disabled = false;
+    } }, 'Flip!');
+    shell('🪙 Coin Flip', coin, h('div', { class: 'ar-sides' }, sides), bet.el, go, msg, h('div', { class: 'note' }, 'Win and you get 1.9 times your bet.'));
+  }
+
+  function dice() {
+    stop(); let pick = 3, busy = false;
+    const die = h('div', { class: 'ar-die' }, '🎲'), faces = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+    const msg = h('div', { class: 'ar-msg' }, 'Pick your lucky number and roll!'), bet = betControls();
+    const nums = [1, 2, 3, 4, 5, 6].map((n) => h('button', { type: 'button', class: 'btn side' + (n === pick ? ' on' : ''), onclick: (e) => { pick = n; nums.forEach((b) => b.classList.remove('on')); e.currentTarget.classList.add('on'); } }, faces[n - 1]));
+    const go = h('button', { type: 'button', class: 'btn primary', onclick: async () => {
+      if (busy) return; busy = true; go.disabled = true; msg.className = 'ar-msg'; msg.textContent = 'Rolling…';
+      let r; try { r = await api('/arcade/dice', 'POST', { bet: bet.get(), pick }); } catch (e) { toast(e.message); busy = false; go.disabled = false; msg.textContent = ''; return; }
+      die.classList.add('rolling'); const spin = setInterval(() => { die.textContent = faces[rand(0, 5)]; uiSound('spin'); }, 90);
+      await sleep(calmMotion() ? 100 : 1000); clearInterval(spin); die.classList.remove('rolling'); die.textContent = faces[r.result - 1];
+      settle(r, msg, `It's a ${r.result}!`); busy = false; go.disabled = false;
+    } }, 'Roll!');
+    shell('🎲 Lucky Dice', die, h('div', { class: 'ar-sides' }, nums), bet.el, go, msg, h('div', { class: 'note' }, 'Guess the number and you get 5.5 times your bet.'));
+  }
+
+  function slots() {
+    stop(); let busy = false; const syms = ['🍒', '🍋', '🔔', '⭐', '💎'];
+    const reels = [0, 1, 2].map(() => h('div', { class: 'ar-reel' }, '🎰'));
+    const msg = h('div', { class: 'ar-msg' }, 'Spin to win!'), bet = betControls();
+    const go = h('button', { type: 'button', class: 'btn primary', onclick: async () => {
+      if (busy) return; busy = true; go.disabled = true; msg.className = 'ar-msg'; msg.textContent = 'Spinning…';
+      let r; try { r = await api('/arcade/slots', 'POST', { bet: bet.get() }); } catch (e) { toast(e.message); busy = false; go.disabled = false; msg.textContent = ''; return; }
+      reels.forEach((el) => el.classList.add('spinning'));
+      const spin = setInterval(() => { reels.forEach((el) => { if (el.classList.contains('spinning')) el.textContent = syms[rand(0, 4)]; }); uiSound('spin'); }, 80);
+      for (let i = 0; i < 3; i++) { await sleep(calmMotion() ? 60 : 550 + i * 450); reels[i].classList.remove('spinning'); reels[i].textContent = r.reels[i]; uiSound('pop'); }
+      clearInterval(spin);
+      settle(r, msg, r.mult >= 5 ? `JACKPOT! x${r.mult}` : `Two cherries! x${r.mult}`); busy = false; go.disabled = false;
+    } }, 'Spin!');
+    shell('🎰 Slots', h('div', { class: 'ar-reels' }, reels), bet.el, go, msg,
+      h('div', { class: 'note' }, 'Three in a row pays: 🍒 5x · 🍋 7x · 🔔 14x · ⭐ 35x · 💎 120x. Any two 🍒 pays 1.5x.'));
+  }
+
+  home();
+  openOverlay(box);
+}
 
 /* ------------------------------------------------------------------ boot */
 

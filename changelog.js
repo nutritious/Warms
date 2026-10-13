@@ -85,4 +85,13 @@ module.exports = [
     'The jump scare is a lot scarier now',
     'Halloween! The lobby is decorated, and the Halloween pack is limited: both leave on November 1st (tags you already won are kept)',
   ] },
+  { id: 'v16', date: '2026-10-12', title: 'Arcade, bouncy look and more pranks', notes: [
+    'New 🕹️ Arcade button on the far-left bar with six games: Whack-a-Mole, Memory Match and Reaction Test earn coins (up to 300 a day), and Coin Flip, Lucky Dice and Slots let you bet your coins',
+    'A bouncier, more fun look: springy buttons, messages that pop in, emoji bursts when you react, confetti when you send a 🎉, and a smooth coin counter',
+    'Soft sounds for clicks, sent and received messages and coins. Turn sounds or the bouncy motion off in Settings > Appearance',
+    'Three new colorful themes: Candy, Mint and Galaxy',
+    'Troll Panel: 8 new pranks (peeking figure, flickering lights, possessed screen, whispers, fake ban, fake update, fake delete-everything and fake virus pop-ups) plus 💀 CHAOS, which sends four random pranks in a row. Trolling Everyone has a short cooldown for people with the Troll Panel (the Owner has none)',
+    'Admins now have their own Admin Panel (🛠️) next to the ⚡ Command Center: find members and change their role, mute or remove them, handle reports, edit AutoMod words, post announcements and see recent staff actions',
+    'Better panels: the Troll Panel is sorted into Scary, Fake system screens and Shake it up, and the Owner, Community and Troll panels are roomier, with a close button that stays put and quick-jump chips to hop between sections',
+  ] },
 ];

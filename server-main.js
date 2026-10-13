@@ -1616,7 +1616,7 @@ const automodView = () => ({
   striked: Object.values(db.users).filter((u) => u.offenses && !automodMuted(u)).map((u) => ({ id: u.id, username: u.username, offenses: u.offenses })),
 });
 app.get('/api/owner/automod', auth, ownerOnly, (req, res) => res.json(automodView()));
-app.put('/api/owner/automod', auth, ownerOnly, (req, res) => {
+function automodPut(req, res) {
   const c = db.settings.automod;
   if (typeof req.body.enabled === 'boolean') c.enabled = req.body.enabled;
   if (typeof req.body.includeStaff === 'boolean') c.includeStaff = req.body.includeStaff;
@@ -1624,7 +1624,8 @@ app.put('/api/owner/automod', auth, ownerOnly, (req, res) => {
   audit(req.user, `AutoMod ${c.enabled ? 'on' : 'off'}${c.includeStaff ? ', also filtering staff' : ''}`);
   save();
   res.json(automodView());
-});
+}
+app.put('/api/owner/automod', auth, ownerOnly, automodPut);
 
 app.post('/api/owner/transfer', auth, ownerOnly, async (req, res) => {
   try {
@@ -1897,7 +1898,12 @@ const TROLL_EFFECTS = [
   ['jumpscare', '👹', 'Jump scare'], ['blackout', '🔦', 'Lights out'], ['spiders', '🕷️', 'Spider swarm'], ['blood', '🩸', 'Blood drip'],
   ['crack', '💥', 'Cracked screen'], ['glitch', '📺', 'Glitch and crash'], ['eyes', '👁️', 'Creepy eyes'], ['haunt', '👻', 'Haunting'],
   ['hacked', '💻', 'Fake hack alert'], ['shake', '🌋', 'Earthquake'], ['flip', '🙃', 'Flip upside down'], ['zombie', '🧟', 'Zombie hands'],
+  ['peeker', '🫥', 'Peeking figure'], ['flicker', '💡', 'Flickering lights'], ['possessed', '😈', 'Possessed screen'], ['whispers', '🗣️', 'Whispers'],
+  ['fakeban', '🔨', 'Fake ban notice'], ['fakeupdate', '⬇️', 'Fake update'], ['fakedelete', '🗑️', 'Fake delete-everything'], ['virus', '🦠', 'Fake virus pop-ups'],
+  ['chaos', '💀', 'CHAOS (a random mix)'],
 ];
+const CHAOS_POOL = ['jumpscare', 'blackout', 'spiders', 'blood', 'crack', 'glitch', 'eyes', 'haunt', 'hacked', 'zombie', 'peeker', 'flicker', 'possessed', 'whispers', 'fakeban', 'fakeupdate', 'fakedelete', 'virus', 'shake', 'flip'];
+const trollAllAt = new Map(); // userId -> last time they trolled the whole server (a cooldown so it stays fun)
 const canTroll = (u) => isOwner(u) || u.troll === true;
 const isCommunity = (u) => ['owner', 'admin', 'community'].includes(roleOf(u).id);
 
@@ -1912,7 +1918,7 @@ function sendFx(target, payload) {
 
 app.post('/api/troll', auth, (req, res) => {
   if (!canTroll(req.user)) return res.status(403).json({ error: 'You do not have the Troll Panel' });
-  if (rateLimited('troll:' + req.user.id, 10, 30000)) return res.status(429).json({ error: 'Easy, trickster. Wait a few seconds' });
+  if (!isOwner(req.user) && rateLimited('troll:' + req.user.id, 10, 30000)) return res.status(429).json({ error: 'Easy, trickster. Wait a few seconds' });
   const fx = TROLL_EFFECTS.find((e) => e[0] === req.body.effect);
   if (!fx) return res.status(400).json({ error: 'Unknown effect' });
   const target = req.body.target === 'all' ? 'all' : String(req.body.target || '');
@@ -1920,6 +1926,18 @@ app.post('/api/troll', auth, (req, res) => {
   if (target !== 'all' && !tu) return res.status(404).json({ error: 'Pick a person (or everyone)' });
   const emoji = /^\p{Extended_Pictographic}/u.test(String(req.body.emoji || '')) ? Array.from(String(req.body.emoji)).slice(0, 4).join('') : fx[1];
   const seconds = clampNum(req.body.seconds, 3, 20, 8);
+  if (target === 'all' && !isOwner(req.user)) { // trolling the whole server has a cooldown (the Owner has none)
+    const wait = (fx[0] === 'chaos' ? 90 : 45) * 1000, left = (trollAllAt.get(req.user.id) || 0) + wait - Date.now();
+    if (left > 0) return res.status(429).json({ error: `The whole server needs a breather. Try again in ${Math.ceil(left / 1000)} seconds` });
+    trollAllAt.set(req.user.id, Date.now());
+  }
+  if (fx[0] === 'chaos') { // four random effects, one after another
+    const picks = [...CHAOS_POOL].sort(() => Math.random() - 0.5).slice(0, 4);
+    picks.forEach((id, i) => setTimeout(() => sendFx(target, { t: 'troll', effect: id, seconds: 6, by: i === 0 ? req.user.username : '' }), i * 7000));
+    sendFx(target, { t: 'troll', effect: 'chaosintro', seconds: 3, by: req.user.username });
+    audit(req.user, `trolled ${tu ? tu.username : 'everyone'}: CHAOS`);
+    return res.json({ ok: true });
+  }
   sendFx(target, { t: 'troll', effect: fx[0], emoji, seconds, by: req.user.username });
   audit(req.user, `trolled ${tu ? tu.username : 'everyone'}: ${fx[2]}`);
   res.json({ ok: true });
@@ -2065,6 +2083,78 @@ app.post('/api/owner/surprise', auth, ownerOnly, (req, res) => {
   res.json({ ok: true, text, events: economyFor(req.user).events });
 });
 
+/* ------------------------------------------------------------------ arcade
+   Reflex games earn a few play coins (with a daily cap, checked on the server). Coin games let people bet play coins:
+   every roll is decided here on the server, never by the browser. */
+const ARCADE_DAILY_CAP = 300;
+const ARCADE_GAMES = { whack: { min: 22, max: 70 }, memory: { min: 8, max: 300 }, reaction: { min: 5, max: 120 } };
+const arcadeRuns = new Map(); // userId:game -> { id, at }
+const dayKey = () => new Date().toISOString().slice(0, 10);
+function arcadeState(u) {
+  econ(u);
+  if (!u.arcade || u.arcade.day !== dayKey()) u.arcade = { day: dayKey(), earned: 0 };
+  return u.arcade;
+}
+function arcadeReward(game, score, extra) {
+  if (game === 'whack') return Math.min(45, Math.floor(score) + (score >= 25 ? 10 : 0));
+  if (game === 'memory') return Math.max(5, 40 - Math.max(0, Math.floor(extra) - 8) * 2);
+  const ms = extra; // reaction: average milliseconds
+  return ms < 220 ? 40 : ms < 280 ? 30 : ms < 350 ? 20 : ms < 450 ? 12 : 5;
+}
+app.get('/api/arcade', auth, (req, res) => { const a = arcadeState(req.user); res.json({ cap: ARCADE_DAILY_CAP, earned: a.earned, left: Math.max(0, ARCADE_DAILY_CAP - a.earned), ...economyFor(req.user) }); });
+app.post('/api/arcade/start', auth, (req, res) => {
+  const game = String(req.body.game || '');
+  if (!ARCADE_GAMES[game]) return res.status(400).json({ error: 'Unknown game' });
+  if (rateLimited('arc:' + req.user.id, 40, 60000)) return res.status(429).json({ error: 'Slow down a little' });
+  const id = uid(5); arcadeRuns.set(req.user.id + ':' + game, { id, at: Date.now() });
+  res.json({ id });
+});
+app.post('/api/arcade/finish', auth, (req, res) => {
+  const game = String(req.body.game || ''), g = ARCADE_GAMES[game];
+  if (!g) return res.status(400).json({ error: 'Unknown game' });
+  const key = req.user.id + ':' + game, run = arcadeRuns.get(key);
+  if (!run || run.id !== req.body.id) return res.status(400).json({ error: 'Start the game first' });
+  arcadeRuns.delete(key);
+  const secs = (Date.now() - run.at) / 1000;
+  if (secs < g.min || secs > g.max) return res.json({ earned: 0, note: secs < g.min ? 'That was too fast to be real.' : 'That took too long, so it did not count.', ...economyFor(req.user) });
+  const score = Math.max(0, Math.min(60, Number(req.body.score) || 0)), extra = Math.max(0, Math.min(100000, Number(req.body.extra) || 0));
+  if (game === 'whack' && score > Math.ceil(secs * 2.2)) return res.json({ earned: 0, note: 'That score is not possible.', ...economyFor(req.user) });
+  if (game === 'memory' && extra < 8) return res.json({ earned: 0, note: 'That score is not possible.', ...economyFor(req.user) });
+  if (game === 'reaction' && (extra < 80 || extra > 5000)) return res.json({ earned: 0, note: 'That score is not possible.', ...economyFor(req.user) });
+  const u = econ(req.user), a = arcadeState(u);
+  const want = arcadeReward(game, score, extra), coins = Math.max(0, Math.min(want, ARCADE_DAILY_CAP - a.earned));
+  a.earned += coins; u.coins = Math.min(1e9, u.coins + coins); save();
+  res.json({ earned: coins, wanted: want, capped: coins < want, left: Math.max(0, ARCADE_DAILY_CAP - a.earned), ...economyFor(u) });
+});
+const SLOT_SYMBOLS = [['🍒', 30, 5], ['🍋', 24, 7], ['🔔', 18, 14], ['⭐', 9, 35], ['💎', 3, 120]]; // symbol, weight, pays x the bet for three in a row
+function spinSlotReel() { let r = crypto.randomInt(0, SLOT_SYMBOLS.reduce((a, b) => a + b[1], 0)); for (const s of SLOT_SYMBOLS) { if ((r -= s[1]) < 0) return s[0]; } return SLOT_SYMBOLS[0][0]; }
+function coinGame(req, res, play) {
+  if (rateLimited('bet:' + req.user.id, 25, 30000)) return res.status(429).json({ error: 'Slow down a little' });
+  const u = econ(req.user), bet = Math.trunc(Number(req.body.bet));
+  if (!Number.isFinite(bet) || bet < 1 || bet > 500) return res.status(400).json({ error: 'Bet between 1 and 500 coins' });
+  if (u.coins < bet) return res.status(400).json({ error: 'You do not have enough coins' });
+  const out = play(bet); if (!out) return res.status(400).json({ error: 'Pick something first' });
+  u.coins = Math.max(0, Math.min(1e9, u.coins - bet + out.back)); save();
+  res.json({ ...out, bet, net: out.back - bet, ...economyFor(u) });
+}
+app.post('/api/arcade/coinflip', auth, (req, res) => coinGame(req, res, (bet) => {
+  const pick = req.body.pick === 'tails' ? 'tails' : req.body.pick === 'heads' ? 'heads' : null; if (!pick) return null;
+  const result = crypto.randomInt(0, 2) ? 'heads' : 'tails', won = result === pick;
+  return { result, won, back: won ? Math.floor(bet * 1.9) : 0 };
+}));
+app.post('/api/arcade/dice', auth, (req, res) => coinGame(req, res, (bet) => {
+  const pick = Math.trunc(Number(req.body.pick)); if (!(pick >= 1 && pick <= 6)) return null;
+  const result = crypto.randomInt(1, 7), won = result === pick;
+  return { result, won, back: won ? Math.floor(bet * 5.5) : 0 };
+}));
+app.post('/api/arcade/slots', auth, (req, res) => coinGame(req, res, (bet) => {
+  const reels = [spinSlotReel(), spinSlotReel(), spinSlotReel()];
+  let mult = 0;
+  if (reels[0] === reels[1] && reels[1] === reels[2]) mult = SLOT_SYMBOLS.find((x) => x[0] === reels[0])[2];
+  else if (reels.filter((x) => x === '🍒').length === 2) mult = 1.5;
+  return { reels, won: mult > 0, mult, back: Math.floor(bet * mult) };
+}));
+
 /* ---------------------------------------------------------------- minigame
    "Number Rush": tap 1 to 16 in order. The Owner picks the time limit and the prize.
    The server times it from the moment a person presses Start, so the clock cannot be changed in the browser. */
@@ -2177,6 +2267,31 @@ app.get('/api/community/overview', auth, needCommunity, (req, res) => {
     now,
   });
 });
+
+/* ------------------------------------------------------------ Admin Panel
+   A panel of its own for Admins (and the Owner): members, reports, AutoMod and the staff log, next to the Command Center. */
+const adminOnly = (req, res, next) => (isAdmin(req.user) ? next() : res.status(403).json({ error: 'The Admin Panel is for Admins and the Owner' }));
+app.get('/api/admin/panel', auth, adminOnly, (req, res) => {
+  const users = Object.values(db.users);
+  res.json({
+    now: Date.now(),
+    me: req.user.id,
+    members: users.slice().sort((a, b) => roleOf(a).position - roleOf(b).position || a.username.localeCompare(b.username)).map((u) => ({ id: u.id, username: u.username, roleId: u.roleId, online: online.has(u.id), muted: muteLeft(u), createdAt: u.createdAt, canManage: u.id !== req.user.id && outranks(req.user, u) })),
+    roles: db.roles.slice().sort((a, b) => a.position - b.position).filter((r) => r.id !== 'owner').map((r) => ({ id: r.id, name: r.name, color: r.color })),
+    reports: db.reports.slice(-25).reverse().map((r) => ({ id: r.id, username: r.username, kind: r.kind, message: r.message, ts: r.ts, resolved: !!r.resolved })),
+    automod: automodView(),
+    audit: db.audit.slice(-15).reverse(),
+  });
+});
+app.post('/api/admin/reports/:id/resolve', auth, adminOnly, (req, res) => {
+  const r = db.reports.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'No such report' });
+  r.resolved = !r.resolved; audit(req.user, `${r.resolved ? 'resolved' : 'reopened'} a report from ${r.username}`); save(); res.json({ ok: true, resolved: r.resolved });
+});
+app.delete('/api/admin/reports/:id', auth, adminOnly, (req, res) => {
+  db.reports = db.reports.filter((x) => x.id !== req.params.id); save(); res.json({ ok: true });
+});
+app.put('/api/admin/automod', auth, adminOnly, automodPut);
 
 app.post('/api/community/announce', auth, needCommunity, (req, res) => {
   const text = String(req.body.text || '').trim().slice(0, 300);
