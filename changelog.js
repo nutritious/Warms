@@ -99,4 +99,10 @@ module.exports = [
     'Three new coin games in the Arcade: Blackjack (blackjack pays 3 to 2, double down), Roulette (colors, odd or even, dozens or a single number) and Higher or Lower (keep guessing to build a streak, cash out any time)',
     'Bet as much as you want: every coin game now lets you bet any amount up to what you have, with quick buttons for Half and All in',
   ] },
+  { id: 'v18', date: '2026-10-13', title: 'Stays awake and safer saving', notes: [
+    'The site now keeps itself awake, so it no longer goes to sleep and restarts when it is quiet',
+    'One bad request can no longer crash the whole site',
+    'A damaged save file is never replaced by an empty site: a copy is kept first',
+    'Owner Panel > Save & restore shows when the site last started, so you can tell if it restarted',
+  ] },
 ];

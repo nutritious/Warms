@@ -46,9 +46,16 @@ function freshDb() {
 }
 
 let db;
+const STARTED_AT = Date.now();
 try {
   db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
 } catch (e) {
+  if (fs.existsSync(DB_FILE) && fs.statSync(DB_FILE).size > 2) {
+    // The file is there but unreadable. Never start empty on top of it: keep a copy, and with an external database refuse to start,
+    // so a bad file can't overwrite the good copy in the database.
+    try { fs.copyFileSync(DB_FILE, DB_FILE + '.broken-' + Date.now()); } catch {}
+    if (store.enabled) { console.error('db.json could not be read (' + e.message + '). Not starting, so the external database is not overwritten.'); process.exit(1); }
+  }
   db = freshDb();
 }
 
@@ -1501,6 +1508,8 @@ app.post('/api/owner/give-coins', auth, ownerOnly, (req, res) => {
   res.json({ ok: true, coins: target.coins, username: target.username });
 });
 
+app.get('/api/ping', (req, res) => res.json({ ok: true }));
+
 // Is the data folder on a real disk that survives updates? (A mounted disk lives on a different device than the app's own files.)
 function storageInfo() {
   let persistent = true; // on your own computer ./data stays put
@@ -1508,7 +1517,7 @@ function storageInfo() {
     try { persistent = fs.statSync(DATA_DIR).dev !== fs.statSync(__dirname).dev; } catch { persistent = false; }
   }
   if (store.enabled) persistent = true;
-  return { persistent, dir: DATA_DIR, onRender: !!process.env.RENDER, database: store.enabled };
+  return { persistent, dir: DATA_DIR, onRender: !!process.env.RENDER, database: store.enabled, startedAt: STARTED_AT };
 }
 
 app.get('/api/owner/backup', auth, ownerOnly, (req, res) => {
@@ -2481,6 +2490,15 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     try { await store.flush(); } catch {}
     process.exit(0);
   });
+}
+
+// One bad request must never take the whole site down (a crash restarts the app, and a restart can wipe a site without permanent storage).
+process.on('uncaughtException', (e) => console.error('Uncaught error (kept running): ' + (e && e.stack || e)));
+process.on('unhandledRejection', (e) => console.error('Unhandled promise error (kept running): ' + (e && e.stack || e)));
+
+// Render's free plan puts a site to sleep after ~15 quiet minutes, and waking it up is a full restart. Ping ourselves through the public address to stay awake.
+if (process.env.RENDER_EXTERNAL_URL && process.env.KEEP_AWAKE !== '0') {
+  setInterval(() => { fetch(process.env.RENDER_EXTERNAL_URL + '/api/ping').catch(() => {}); }, 9 * 60 * 1000).unref();
 }
 
 server.listen(PORT, () => {

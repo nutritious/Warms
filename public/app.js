@@ -2289,6 +2289,7 @@ async function openOwnerPanel() {
           document.body.append(a); a.click(); a.remove(); toast2('Backup downloaded');
         }) }, 'Download backup'),
         h('button', { class: 'btn small', onclick: () => restoreFile.click() }, 'Restore from backup'), restoreFile),
+      st.startedAt ? h('div', { class: 'note' }, 'Site running since ' + new Date(st.startedAt).toLocaleString() + ' (' + ago(st.startedAt) + '). If this is much newer than you expect, the site restarted.') : null,
       h('div', { class: 'note' }, 'Backups hold accounts, roles, chats, coins and tags. Uploaded pictures are not included.')),
     h('section', {}, h('h4', {}, 'Sign-ups & welcome'),
       h('label', { class: 'own-check' }, open, ' Allow new people to register'),
