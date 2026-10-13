@@ -88,6 +88,7 @@ function clickableAvatar(user) {
 function avatar(user, withDot) {
   const a = h('div', { class: 'avatar', style: `background:${colorFor(user.username)}` }, user.avatar ? null : user.username[0].toUpperCase());
   if (user.avatar) a.style.cssText = `background:url("${user.avatar}") center/cover`;
+  if (user.fx && user.fx.ring) a.classList.add('fx-' + user.fx.ring);
   if (withDot && user.online) a.append(h('span', { class: 'status-dot' }));
   return a;
 }
@@ -329,7 +330,7 @@ async function start() {
   loadMinigame();
   attempt(loadPolls); attempt(loadQuests); attempt(loadWebGames);
   playIntro();
-  if (state.tour) setTimeout(() => openTour(true), 3000);
+  if (state.tour) { const tryTour = () => { if (!state.tour) return; if ($('overlay').classList.contains('hidden') && !document.querySelector('.intro')) openTour(true); else setTimeout(tryTour, 4000); }; setTimeout(tryTour, 3000); } // never covers something you opened
   connectWs();
   $('msgInput').focus();
 }
@@ -483,7 +484,6 @@ function renderChrome() {
       } }, '✕') : null);
   }));
   $('ownerBtn').classList.toggle('hidden', !isOwner());
-  $('railTour').classList.toggle('hidden', !isOwner()); // everyone else sees the tour once, then it is gone
   $('commBtn').classList.toggle('hidden', !(state.perks && state.perks.community));
   $('trollBtn').classList.toggle('hidden', !(state.perks && state.perks.troll));
   $('adminBtn').classList.toggle('hidden', !isAdmin());
@@ -511,7 +511,8 @@ function renderChrome() {
   $('msgInput').placeholder = readOnly ? '🔒 Only the Owner can post in #' + ch.name : muted ? `You are muted for ${muted} more min` : ch ? 'Message #' + ch.name : 'Message';
 
   const u = me();
-  $('meAvatar').replaceWith(Object.assign(avatar(u, false), { id: 'meAvatar' }));
+  $('meAvatar').replaceWith(Object.assign(avatar(u, false), { id: 'meAvatar', title: 'My profile', onclick: () => openProfile(me()) }));
+  $('meAvatar').style.cursor = 'pointer';
   $('meName').textContent = u.username;
   $('meName').style.color = myRole().color;
   $('meRole').textContent = myRole().name;
@@ -906,6 +907,7 @@ function showPopover(user, anchor) {
       h('div', { class: 'pop-name' }, user.username, userTag(user)),
       h('div', { class: 'pop-sub' }, (user.online ? 'Online' : 'Offline') + ' · Joined ' + new Date(user.createdAt).toLocaleDateString()),
       user.status ? h('div', { class: 'pop-status' }, user.status) : null,
+      h('button', { type: 'button', class: 'btn small pop-prof', onclick: () => { hidePopover(); openProfile(user); } }, '👤 View profile'),
       friendButtons(user),
       h('div', { class: 'pop-sec' }, h('h6', {}, 'Role'),
         options.length
@@ -1516,7 +1518,7 @@ function userTag(u) {
     (t.icon ? t.icon + ' ' : '') + t.name);
 }
 
-const ECO_KEYS = ['coins', 'nextSpinAt', 'owned', 'equipped', 'cost', 'baseCost', 'events', 'tags', 'packs', 'rarities', 'wheel'];
+const ECO_KEYS = ['coins', 'nextSpinAt', 'owned', 'equipped', 'equippedFx', 'cost', 'baseCost', 'events', 'tags', 'packs', 'rarities', 'wheel'];
 function takeEco(r) {
   const eco = state.eco || {};
   for (const k of ECO_KEYS) if (r[k] !== undefined) eco[k] = r[k];
@@ -1740,15 +1742,15 @@ function machinePane(redraw) {
 function tagsPane(redraw) {
   const eco = state.eco, owned = new Set(eco.owned);
   const mk = (t) => {
-    const c = RARITY_COLOR[t.rarity], has = owned.has(t.id), on = eco.equipped === t.id;
+    const c = RARITY_COLOR[t.rarity], has = owned.has(t.id), on = t.kind ? (eco.equippedFx || {})[t.kind] === t.id : eco.equipped === t.id;
     return h('button', {
       type: 'button', class: 'tagcard r-' + t.rarity + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
       title: has ? (on ? 'Click to remove' : 'Click to wear') : 'Not unlocked yet',
-      onclick: () => { if (!has) return; attempt(async () => { takeEco(await api('/tags/equip', 'POST', { tag: on ? null : t.id })); redraw('tags'); }); },
-    }, h('span', { class: 'tc-name' }, has ? (t.icon || '') + ' ' + t.name : '👁 ???'), h('span', { class: 'tc-r' }, t.rarity), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
+      onclick: () => { if (!has) return; attempt(async () => { takeEco(await api('/tags/equip', 'POST', { tag: on ? null : t.id, kind: t.kind || undefined })); if (t.kind) uiSound('pop'); redraw('tags'); }); },
+    }, h('span', { class: 'tc-name' }, has ? (t.icon || '') + ' ' + t.name : '👁 ???'), h('span', { class: 'tc-r' }, t.rarity + (t.kind ? ' · ' + ({ ring: 'avatar ring', name: 'name effect', bg: 'profile background' })[t.kind] : '')), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
   };
   return h('div', { class: 'tags-pane' },
-    h('p', { class: 'rw-sub' }, `You have ${owned.size} of ${eco.tags.length} tags. Pick one to show next to your name.`),
+    h('p', { class: 'rw-sub' }, `You have ${owned.size} of ${eco.tags.length} tags. Pick one to show next to your name. ✨ Profile Effects change how your profile looks.`),
     eco.packs.map((p) => {
       const mine = eco.tags.filter((t) => t.pack === p.id);
       const sorted = mine.slice().sort((a, b) => RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity));
@@ -2107,9 +2109,9 @@ function staffTagTools(user) {
 }
 
 // Buttons shown on a person's profile card.
-function friendButtons(user) {
+function friendButtons(user, inModal) {
   if (user.id === state.me) return null;
-  const st = friendState(user.id), done = () => { hidePopover(); };
+  const st = friendState(user.id), done = () => { hidePopover(); if (inModal) closeOverlay(); };
   if (st === 'friend') return h('div', { class: 'pop-sec pop-friend' }, h('button', { class: 'btn primary small', onclick: () => { done(); openFriends(user.id); } }, '💬 Message'), h('span', { class: 'pill' }, '✓ Friends'));
   if (st === 'incoming') return h('div', { class: 'pop-sec pop-friend' }, h('button', { class: 'btn primary small', onclick: () => { done(); frAct('/friends/accept', 'POST', { userId: user.id }); } }, 'Accept friend request'));
   if (st === 'outgoing') return h('div', { class: 'pop-sec pop-friend' }, h('span', { class: 'pill' }, 'Friend request sent'));
@@ -3342,6 +3344,50 @@ function burstAt(el, emoji, n = 8) {
 }
 function popConfetti() { if (bouncyOn()) { const run = FX_RUN.confetti; if (run) run(); } }
 
+/* ------------------------------------------------------------------ v20: profile pages */
+const ROLE_ICON = { owner: '♛', admin: '🔧', community: '🌟', manager: '🛡️', moderator: '🔨' };
+// Floating things on a profile: petals, embers, confetti, sparkles... one kind per background.
+function particleLayer(type) {
+  const cfg = { default: [14, ['•']], dusk: [16, ['🌸', '🌺', '✿']], aurora: [22, ['✦', '✧', '✨']], stars: [30, ['✦', '·', '•']], lava: [22, ['●']], prism: [30, ['■']], slash: [34, ['']] }[type] || [14, ['•']];
+  const rnd = (a, b) => a + Math.random() * (b - a), colors = ['#ff3b6b', '#ffb300', '#43e97b', '#38bdf8', '#a855f7'];
+  const layer = h('div', { class: 'pc-fx t-' + type }), kids = [];
+  for (let i = 0; i < cfg[0]; i++) {
+    const sp = h('span', { style: `--w:${rnd(90, 230).toFixed(0)}px;--a:${rnd(-70, 70).toFixed(0)}deg;--x:${rnd(0, 96).toFixed(1)}%;--y:${rnd(2, 96).toFixed(1)}%;--d:${(-rnd(0, 9)).toFixed(2)}s;--t:${rnd(type === 'lava' ? 3 : 5, type === 'lava' ? 6 : 11).toFixed(2)}s;--s:${type === 'lava' ? rnd(4, 9).toFixed(0) : rnd(9, 20).toFixed(0)}px;--dx:${rnd(-60, 60).toFixed(0)}px;--r:${rnd(-540, 540).toFixed(0)}deg;--c:${colors[i % colors.length]};color:rgba(255,255,255,.75)` }, type === 'prism' || type === 'lava' || type === 'slash' ? '' : cfg[1][i % cfg[1].length]);
+    kids.push(sp);
+  }
+  if (type === 'stars') for (let i = 0; i < 3; i++) kids.push(h('span', { class: 'shoot', style: `--x:${rnd(5, 60).toFixed(0)}%;--d:${(-rnd(0, 8)).toFixed(1)}s;--t:${rnd(6, 10).toFixed(1)}s` }));
+  layer.append(...kids); return layer;
+}
+async function openProfile(user) {
+  user = state.users.find((x) => x.id === user.id) || user;
+  const role = roleById(user.roleId), fx = user.fx || {}, isMe = user.id === state.me;
+  let info = { acct: 0, joined: user.createdAt, views: 0, messages: 0 };
+  const stats = h('div', { class: 'pc-stats' });
+  const paintStats = () => stats.replaceChildren(
+    h('span', {}, '✦ account #' + (info.acct || '—')), h('span', {}, '🕐 joined ' + new Date(info.joined).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })),
+    h('span', {}, '👁 ' + info.views.toLocaleString('en-US') + ' views'), h('span', {}, '💬 ' + info.messages.toLocaleString('en-US') + ' messages'));
+  paintStats();
+  const staff = ['owner', 'admin'].includes(user.roleId);
+  const nameEl = h('span', { class: 'pc-name' + (fx.name ? ' fx-' + fx.name : ''), 'data-text': user.username, style: fx.name ? '' : `color:${role.color}` }, user.username);
+  const tag = userTag(user);
+  const pills = h('div', { class: 'pc-pills' }, h('span', { class: 'pc-pill', style: `--c:${role.color}` }, h('i', {}), role.name), user.online ? h('span', { class: 'pc-pill', style: '--c:#43b581' }, h('i', {}), 'online') : h('span', { class: 'pc-pill', style: '--c:#8b8f99' }, h('i', {}), 'offline'));
+  const av = avatar(user, false); av.classList.add('pc-av');
+  const bgType = fx.bg ? fx.bg.replace('bg-', '') : 'default';
+  const card = h('div', { class: 'modal profilecard' + (bgType === 'slash' ? ' croma-glow' : ''), style: `--role:${role.color}` },
+    h('div', { class: 'pc-banner' + (fx.bg ? ' fx-' + fx.bg : '') }), particleLayer(bgType),
+    h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
+    av,
+    h('div', { class: 'pc-title' }, nameEl, staff ? h('span', { class: 'pc-verified', title: role.name }, '✓') : null, tag,
+      user.roleId !== 'member' ? h('span', { class: 'pc-badge', style: `background:${role.color}` }, (ROLE_ICON[user.roleId] || '') + ' ' + role.name.toUpperCase()) : null),
+    h('div', { class: 'pc-handle' }, '@' + user.username),
+    stats, pills,
+    user.status ? h('div', { class: 'pc-status' }, '“' + user.status + '”') : null,
+    h('div', { class: 'pc-actions' },
+      isMe ? h('button', { type: 'button', class: 'btn primary pc-main', onclick: () => { closeOverlay(); openRewards('tags'); } }, '✨ Change my effects') : friendButtons(user, true)));
+  openOverlay(card);
+  try { info = await api('/users/' + user.id + '/profile'); paintStats(); } catch (e) { /* stats stay empty */ }
+}
+
 /* ------------------------------------------------------------------ v19: quests, sidebar box, poll pop-up, countdown, tour, web games */
 async function refreshEco() { try { const d = await api('/bootstrap'); if (d.economy) { takeEco(d.economy); renderCoins(); } } catch (e) { /* later */ } }
 
@@ -3519,7 +3565,6 @@ function openTour(first) {
   openOverlay(h('div', { class: 'modal tour' }, body, dots, h('div', { class: 'tour-nav' }, back, skip, next)));
   paint();
 }
-$('railTour').onclick = () => openTour(false);
 
 /* ------------------------------------------------------------------ Polls */
 state.polls = []; state.unvoted = 0;

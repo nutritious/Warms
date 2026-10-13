@@ -110,8 +110,13 @@ module.exports = [
     'Polls now pop up for everyone for one minute, and the open poll also sits in a little box in the sidebar, so nobody misses it',
     'New people get a welcome tour explaining chat, coins, the shop, the arcade, quests and polls. They see it once, and it is gone after they finish',
     'The Owner can start a countdown (like "Next update" or "Admin abuse") that shows above the chat for everyone',
-    'Web games: the Owner can add links to games that run in a web page, and everyone can play them from the 🌐 button',
+    'Web games: play 2048, Hextris, Tetris and Clumsy Bird right here from the 🌐 button. The Owner can add more links or remove these',
     'The Owner and Admins can delete a space straight from the far-left bar (hover over it and press the ✕)',
     'AutoMod no longer mutes anyone in private chats: direct messages, and spaces limited to certain roles',
+  ] },
+  { id: 'v20', date: '2026-10-13', title: 'New profiles and the Profile Effects pack', notes: [
+    'Profiles got a makeover: tap anyone\'s picture, then "View profile" for a full page with a big picture, name, badges, account number, join date, profile views and message count. Tap your own picture (bottom left) to see yours',
+    'New ✨ Profile Effects pack in the shop (Tag Packs): avatar rings (Sparkle, Rainbow, Galaxy...), name effects (Neon, Fire, Glitch, Gold...) and moving profile backgrounds with floating particles (Aurora, Starfield, Lava, Crimson Slash...). Wear them from My Tags',
+    'Avatar rings show everywhere your picture appears, and name effects and backgrounds show on your profile page',
   ] },
 ];

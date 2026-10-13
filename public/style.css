@@ -1752,3 +1752,113 @@ body.bouncy .auth { background: linear-gradient(120deg, #4a5385, #7b3f8f, #c0557
 .modal.wgplay .rw-x { top: 6px; right: 6px; }
 @media (max-width: 700px) { .wg-hint { display: none; } .pollpop { right: 12px; left: 12px; width: auto; bottom: 76px; } }
 @media (prefers-reduced-motion: reduce) { .pollpop, .tour-body.flip, .cdbar.soon { animation: none; } }
+
+/* ===================================================== v20: profile pages and Profile Effects */
+/* ---- avatar rings (class on .avatar) ---- */
+.avatar[class*="fx-ring-"]::before { content: ""; position: absolute; inset: -4px; border-radius: 50%; pointer-events: none; }
+.avatar.fx-ring-glow { box-shadow: 0 0 10px 2px var(--accent, #ff8a3d), inset 0 0 0 1px rgba(255,255,255,.2); }
+.avatar.fx-ring-dots::before { border: 3px dotted rgba(255,255,255,.85); animation: fxSpin 14s linear infinite; }
+.avatar.fx-ring-sparkle { box-shadow: 0 0 14px 3px rgba(255,255,255,.55); }
+.avatar.fx-ring-sparkle::before { inset: -5px; border: 3px dotted #fff; filter: drop-shadow(0 0 4px #fff); animation: fxTwinkle 1.6s ease-in-out infinite, fxSpin 30s linear infinite; }
+.avatar.fx-ring-sparkle::after { content: "✦"; position: absolute; top: -9px; right: -5px; font-size: 14px; color: #fff; text-shadow: 0 0 8px #fff; animation: fxTwinkle 1.2s ease-in-out infinite; pointer-events: none; }
+.avatar.fx-ring-rainbow::before, .avatar.fx-ring-galaxy::before { inset: -5px; background: conic-gradient(#ff3b3b, #ffb300, #43e97b, #38bdf8, #a855f7, #ff3b3b); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px)); mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px)); animation: fxSpin 4s linear infinite; }
+.avatar.fx-ring-galaxy { box-shadow: 0 0 18px 3px rgba(168,85,247,.7); }
+.avatar.fx-ring-galaxy::before { background: conic-gradient(#0b0221, #7c3aed, #ec4899, #38bdf8, #0b0221); animation-duration: 6s; inset: -6px; }
+.avatar.fx-ring-galaxy::after { content: "✦ ✧ ✦"; position: absolute; left: 50%; top: -16px; transform: translateX(-50%); font-size: 10px; letter-spacing: 6px; color: #fff; white-space: nowrap; text-shadow: 0 0 6px #c084fc; animation: fxTwinkle 2s ease-in-out infinite; pointer-events: none; }
+@keyframes fxSpin { to { transform: rotate(360deg); } }
+@keyframes fxTwinkle { 50% { opacity: .35; } }
+
+/* ---- name effects (class on the name) ---- */
+.fx-name-warm { color: #ff9a4d; text-shadow: 0 0 10px rgba(255,138,61,.8), 0 0 22px rgba(255,138,61,.45); }
+.fx-name-neon { color: #b6fbff; text-shadow: 0 0 4px #fff, 0 0 10px #38e8ff, 0 0 22px #38e8ff, 0 0 40px #0aa5ff; animation: fxFlicker 3.5s infinite; }
+@keyframes fxFlicker { 0%, 18%, 22%, 62%, 64%, 100% { opacity: 1; } 20%, 63% { opacity: .55; } }
+.fx-name-fire { background: linear-gradient(180deg, #fff3a0 0%, #ffb300 35%, #ff4d00 70%, #c40000 100%); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 6px rgba(255,100,0,.8)); animation: fxFire 1.4s ease-in-out infinite alternate; }
+@keyframes fxFire { to { filter: drop-shadow(0 -2px 10px rgba(255,160,0,.95)); } }
+.fx-name-glitch { position: relative; color: #fff; text-shadow: 2px 0 #ff2d6f, -2px 0 #2de2ff; animation: fxGlitch 2.4s steps(1) infinite; }
+@keyframes fxGlitch { 0%, 90%, 100% { transform: none; text-shadow: 2px 0 #ff2d6f, -2px 0 #2de2ff; } 92% { transform: translate(-2px, 1px); text-shadow: -3px 0 #ff2d6f, 3px 0 #2de2ff; } 95% { transform: translate(2px, -1px); } 97% { transform: skewX(12deg); } }
+.fx-name-gold { background: linear-gradient(110deg, #8a6a14 0%, #ffd86b 25%, #fff6c9 40%, #ffd86b 55%, #a67c1a 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; animation: fxShine 3s linear infinite; filter: drop-shadow(0 0 5px rgba(255,200,60,.55)); }
+@keyframes fxShine { to { background-position: -250% 0; } }
+
+/* ---- the profile page ---- */
+.modal.profilecard { position: relative; width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 150px 22px 22px; color: #fff; background: #0b0614; border: 1px solid rgba(255,255,255,.1); isolation: isolate; }
+.pc-av { position: absolute; top: 20px; left: 22px; width: 96px; height: 96px; font-size: 40px; }
+.pc-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.pc-name { font-size: 28px; font-weight: 800; letter-spacing: .01em; overflow-wrap: anywhere; }
+.pc-verified { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #ff7a9a; color: #2b0a16; font-size: 13px; font-weight: 800; }
+.pc-badge { padding: 4px 10px; border-radius: 10px; font-size: 12px; font-weight: 800; letter-spacing: .06em; color: #1b0a28; }
+.profilecard .utag { font-size: 12px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; padding: 4px 10px; border-radius: 10px; }
+.pc-handle { color: rgba(255,255,255,.75); margin: 6px 0 12px; }
+.pc-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14px; color: rgba(255,255,255,.85); font-variant-numeric: tabular-nums; }
+.pc-pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.pc-pill { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 12px; font-weight: 600; font-size: 14px; color: var(--c); background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.1); }
+.pc-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.pc-status { color: rgba(255,255,255,.8); font-style: italic; margin: 4px 0 14px; overflow-wrap: anywhere; }
+.pc-actions { margin-top: 10px; }
+.pc-actions .pop-sec { margin: 0; padding: 0; border: 0; display: flex; gap: 8px; }
+.pc-actions .btn { min-height: 44px; }
+.pc-main { width: 100%; }
+.profilecard .rw-x { top: 10px; right: 10px; }
+.pop-prof { width: 100%; margin: 8px 0 4px; }
+@media (prefers-reduced-motion: reduce) { .avatar[class*="fx-ring-"]::before, .avatar[class*="fx-ring-"]::after, [class*="fx-name-"], .profilecard[class*="fx-bg-"] { animation: none !important; } }
+.modal.profilecard { padding-top: 140px; }
+.pc-av { top: 24px; left: 24px; width: 100px; height: 100px; }
+.pc-actions .pop-sec { background: none; border: 0; box-shadow: none; padding: 0; }
+.pc-actions .pop-sec .btn { flex: 1; justify-content: center; }
+.pc-actions .pop-sec .pill { flex: 1; text-align: center; padding: 12px; }
+
+/* ---- animated profile backgrounds: a moving banner plus floating particles over the whole card ---- */
+.modal.profilecard { padding-top: 160px; }
+.pc-banner { position: absolute; inset: 0 0 auto 0; height: 138px; z-index: 0; overflow: hidden; background: linear-gradient(120deg, color-mix(in srgb, var(--role) 70%, #1a0a2e), #5b21b6, color-mix(in srgb, var(--role) 50%, #0e7490), #5b21b6); background-size: 300% 300%; animation: pcFlow 10s ease-in-out infinite; }
+.pc-banner::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,.28) 50%, transparent 65%); transform: translateX(-120%); animation: pcSweep 5s ease-in-out infinite; }
+.pc-banner::before { content: ""; position: absolute; inset: auto 0 0 0; height: 60px; background: linear-gradient(180deg, transparent, #0b0614); z-index: 2; }
+.pc-fx { position: absolute; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; border-radius: inherit; }
+.pc-fx span { position: absolute; left: var(--x); top: -10%; font-size: var(--s); line-height: 1; opacity: 0; will-change: transform, opacity; animation-delay: var(--d); animation-duration: var(--t); animation-iteration-count: infinite; animation-timing-function: linear; }
+.profilecard > :not(.pc-banner):not(.pc-fx) { position: relative; z-index: 2; }
+.profilecard > .pc-av { position: absolute; }
+.profilecard > .rw-x { position: absolute; z-index: 5; }
+@keyframes pcFlow { 50% { background-position: 100% 100%; } }
+@keyframes pcSweep { 55%, 100% { transform: translateX(120%); } }
+/* each background */
+.pc-banner.fx-bg-dusk { background: linear-gradient(180deg, #2a1250, #a43c8a 55%, #ff8a5c); background-size: 100% 100%; animation: pcDusk 7s ease-in-out infinite alternate; }
+@keyframes pcDusk { to { filter: hue-rotate(35deg) brightness(1.12); } }
+.pc-banner.fx-bg-aurora { background: linear-gradient(115deg, #052b2b, #0fa38a, #6d4bd6, #19d3a2, #052b2b); background-size: 300% 200%; animation: pcAurora 7s ease-in-out infinite alternate; }
+@keyframes pcAurora { 0% { background-position: 0% 30%; filter: hue-rotate(0); } 100% { background-position: 100% 70%; filter: hue-rotate(40deg); } }
+.pc-banner.fx-bg-stars { background: linear-gradient(180deg, #02030f, #101a5e 70%, #2a2f8f); animation: none; }
+.pc-banner.fx-bg-stars::after { background: none; }
+.pc-banner.fx-bg-lava { background: linear-gradient(0deg, #ff6a00, #c21500 45%, #3b0500); background-size: 100% 250%; animation: pcLava 3.5s ease-in-out infinite alternate; }
+@keyframes pcLava { to { background-position: 0 100%; filter: brightness(1.2); } }
+.pc-banner.fx-bg-prism { background: linear-gradient(120deg, #ff3b6b, #ffb300, #43e97b, #38bdf8, #a855f7, #ff3b6b); background-size: 300% 100%; animation: pcPrism 5s linear infinite; }
+@keyframes pcPrism { to { background-position: 300% 0; } }
+/* particles */
+@keyframes pRise { 0% { transform: translateY(0) translateX(0) scale(.6); opacity: 0; } 10% { opacity: .9; } 100% { transform: translateY(-120vh) translateX(var(--dx, 20px)) scale(1); opacity: 0; } }
+@keyframes pFall { 0% { transform: translateY(0) translateX(0) rotate(0); opacity: 0; } 10% { opacity: .95; } 100% { transform: translateY(115vh) translateX(var(--dx, 40px)) rotate(var(--r, 360deg)); opacity: .2; } }
+@keyframes pTwinkle { 0%, 100% { opacity: 0; transform: scale(.4); } 50% { opacity: 1; transform: scale(1.1); } }
+@keyframes pShoot { 0% { transform: translate(0, 0) rotate(35deg); opacity: 0; } 8% { opacity: 1; } 30%, 100% { transform: translate(-340px, 240px) rotate(35deg); opacity: 0; } }
+.pc-fx.t-default span, .pc-fx.t-aurora span { top: auto; bottom: -8%; }
+.pc-fx.t-default span, .pc-fx.t-lava span { animation-name: pRise; }
+.pc-fx.t-aurora span { animation-name: pTwinkle; top: auto; bottom: auto; }
+.pc-fx.t-dusk span, .pc-fx.t-prism span { animation-name: pFall; }
+.pc-fx.t-stars span { animation-name: pTwinkle; top: var(--y); }
+.pc-fx.t-stars span.shoot { animation-name: pShoot; top: -4%; left: auto; right: var(--x); width: 90px; height: 2px; background: linear-gradient(270deg, #fff, transparent); border-radius: 2px; font-size: 0; }
+.pc-fx.t-lava span { bottom: -8%; top: auto; border-radius: 50%; background: radial-gradient(circle, #fff3a0, #ff7a00 60%, transparent 70%); width: var(--s); height: var(--s); font-size: 0; filter: drop-shadow(0 0 6px #ff6a00); }
+.pc-fx.t-prism span { width: 7px; height: 12px; font-size: 0; background: var(--c); border-radius: 2px; }
+.pc-fx.t-aurora span { top: var(--y); }
+@media (prefers-reduced-motion: reduce) { .pc-fx { display: none; } .pc-banner, .pc-banner::after { animation: none !important; } }
+.modal.profilecard { padding-top: 200px; }
+.modal.profilecard > .pc-av { position: absolute; top: 82px; left: 22px; width: 104px; height: 104px; z-index: 3; }
+.modal.profilecard > .rw-x { position: absolute; z-index: 5; top: 10px; right: 10px; }
+.modal.profilecard > .pc-title { margin-top: 0; }
+
+/* ---- Crimson Slash (Croma): red and black flashing with slashes cutting across ---- */
+.pc-banner.fx-bg-slash { background: #050000; background-size: auto; animation: pcSlashFlash 1.5s steps(1) infinite; }
+.pc-banner.fx-bg-slash::after { background: linear-gradient(105deg, transparent 40%, rgba(255,30,60,.55) 50%, transparent 60%); animation-duration: 1.7s; }
+@keyframes pcSlashFlash { 0%, 100% { background: #050000; } 6% { background: #d0001e; } 9% { background: #050000; } 38% { background: #050000; } 41% { background: #9a0016; } 44% { background: #050000; } 71% { background: #050000; } 73% { background: #ff1744; } 76% { background: #050000; } }
+.pc-fx.t-slash::before { content: ""; position: absolute; inset: 0; background: #ff0a30; opacity: 0; mix-blend-mode: screen; animation: pcCardFlash 1.5s steps(1) infinite; }
+@keyframes pcCardFlash { 0%, 100% { opacity: 0; } 6% { opacity: .22; } 8% { opacity: 0; } 41% { opacity: .16; } 43% { opacity: 0; } 73% { opacity: .26; } 75% { opacity: 0; } }
+.pc-fx.t-slash span { top: var(--y); left: var(--x); width: var(--w); height: 3px; font-size: 0; transform-origin: 0 50%; background: linear-gradient(90deg, transparent, #fff 25%, #ff1744 70%, transparent); border-radius: 3px; box-shadow: 0 0 10px #ff1744; animation-name: pSlash; animation-timing-function: cubic-bezier(.2,.9,.2,1); }
+@keyframes pSlash { 0%, 100% { opacity: 0; transform: rotate(var(--a)) scaleX(0); } 4% { opacity: 1; transform: rotate(var(--a)) scaleX(1); } 12% { opacity: .85; transform: rotate(var(--a)) scaleX(1.04); } 22% { opacity: 0; transform: rotate(var(--a)) scaleX(1.08); } }
+.profilecard.croma-glow { animation: fxCromaGlow 4s linear infinite; }
+@keyframes fxCromaGlow { 0% { box-shadow: 0 0 26px 2px #ff3b6b; } 20% { box-shadow: 0 0 26px 2px #ffb300; } 40% { box-shadow: 0 0 26px 2px #43e97b; } 60% { box-shadow: 0 0 26px 2px #38bdf8; } 80% { box-shadow: 0 0 26px 2px #a855f7; } 100% { box-shadow: 0 0 26px 2px #ff3b6b; } }
+@media (prefers-reduced-motion: reduce) { .profilecard.croma-glow, .pc-fx.t-slash::before { animation: none; } }
+.pc-fx.t-slash span { height: 4px; animation-duration: calc(var(--t) * .45); }
+@keyframes pcSlashFlash { 0%, 100% { background: #050000; } 8% { background: #e0001f; } 12% { background: #050000; } 20% { background: #7a0010; } 24% { background: #050000; } 52% { background: #050000; } 56% { background: #ff1744; } 60% { background: #050000; } 64% { background: #b00018; } 68% { background: #050000; } }

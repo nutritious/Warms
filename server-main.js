@@ -118,6 +118,18 @@ for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
   if (!Array.isArray(db.ipBans)) db.ipBans = [];
   if (!Array.isArray(db.polls)) db.polls = [];
 if (!Array.isArray(db.webgames)) db.webgames = [];
+{ // every account gets a short account number
+  const used = new Set(Object.values(db.users).map((x) => x.acct).filter(Boolean));
+  for (const x of Object.values(db.users)) if (!x.acct) { let n; do { n = 10000 + crypto.randomInt(0, 90000); } while (used.has(n)); used.add(n); x.acct = n; }
+}
+if (!db.webgamesSeeded) { // a few starter games (free open-source games hosted on GitHub Pages); the Owner can remove any of them
+  db.webgamesSeeded = true;
+  if (!db.webgames.length) db.webgames.push(
+    { id: 'wg2048', name: '2048', icon: '🔢', url: 'https://gabrielecirulli.github.io/2048/' },
+    { id: 'wghex', name: 'Hextris', icon: '⬡', url: 'https://hextris.github.io/hextris/' },
+    { id: 'wgtetris', name: 'Tetris', icon: '🧱', url: 'https://chvin.github.io/react-tetris/' },
+    { id: 'wgbird', name: 'Clumsy Bird', icon: '🐦', url: 'https://ellisonleao.github.io/clumsy-bird/' });
+}
 if (db.countdown === undefined) db.countdown = null;
   if (!db.invites || typeof db.invites !== 'object' || Array.isArray(db.invites)) db.invites = {};
   if (typeof db.settings.inviteOnly !== 'boolean') db.settings.inviteOnly = INVITE_DEFAULT;
@@ -148,6 +160,7 @@ function save() {
 }
 save();
 
+function newAcct() { const used = new Set(Object.values(db.users).map((x) => x.acct)); let n; do { n = 10000 + crypto.randomInt(0, 90000); } while (used.has(n)); return n; }
 const uid = (n = 8) => crypto.randomBytes(n).toString('hex');
 
 /* ------------------------------------------------------------------ auth */
@@ -195,7 +208,7 @@ const hasAnyPerm = (u) => PERMS.some((p) => can(u, p));
 const muteLeft = (u) => (u.mutedUntil && u.mutedUntil > Date.now() ? Math.ceil((u.mutedUntil - Date.now()) / 60000) : 0);
 
 function publicUser(u) {
-  return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0, tag: u.tag && (u.tags || []).some((t) => (OLD_TAG_IDS[t] || t) === (OLD_TAG_IDS[u.tag] || u.tag)) ? (OLD_TAG_IDS[u.tag] || u.tag) : null };
+  return { id: u.id, username: u.username, roleId: u.roleId, createdAt: u.createdAt, online: online.has(u.id), status: u.status || '', avatar: u.avatar || null, mutedUntil: u.mutedUntil && u.mutedUntil > Date.now() ? u.mutedUntil : 0, fx: fxOf(u), tag: u.tag && (u.tags || []).some((t) => (OLD_TAG_IDS[t] || t) === (OLD_TAG_IDS[u.tag] || u.tag)) ? (OLD_TAG_IDS[u.tag] || u.tag) : null };
 }
 
 /* ------------------------------------------------------------------ IP bans
@@ -512,6 +525,7 @@ app.post('/api/register', async (req, res) => {
       announced: false,
       rulesAgreed: RULES_VERSION, rulesAgreedAt: Date.now(),
       toured: false,
+      acct: newAcct(),
     };
     db.users[user.id] = user;
     if (invite) { invite.uses++; invite.usedBy.push(user.username); user.invitedBy = invite.by; }
@@ -647,9 +661,16 @@ const PACKS = [
     ['quantum-core', 'Quantum Core', '⚛️'], ['mainframe', 'Mainframe', '🖥️'],
     ['singularity', 'Singularity', '♾️'], ['overclocked', 'Overclocked', '⚡'],
     ['rgb-rig', 'RGB Rig', '🌈'] ] },
+  { id: 'effects', name: 'Profile Effects', icon: '✨', blurb: 'Sparkle rings, glowing names and profile backgrounds', tags: [
+    ['ring-glow', 'Soft Glow', '💡', 'ring'], ['name-warm', 'Warm Glow', '🔆', 'name'], ['bg-dusk', 'Dusk Sky', '🌆', 'bg'], ['ring-dots', 'Dotted Ring', '⚪', 'ring'],
+    ['ring-sparkle', 'Sparkle Ring', '✨', 'ring'], ['name-neon', 'Neon Name', '🟦', 'name'], ['bg-aurora', 'Aurora', '🌌', 'bg'],
+    ['ring-rainbow', 'Rainbow Ring', '🌈', 'ring'], ['name-fire', 'Fire Name', '🔥', 'name'], ['bg-stars', 'Starfield', '⭐', 'bg'],
+    ['ring-galaxy', 'Galaxy Ring', '🪐', 'ring'], ['name-glitch', 'Glitch Name', '👾', 'name'],
+    ['name-gold', 'Gold Shimmer', '👑', 'name'], ['bg-lava', 'Lava Flow', '🌋', 'bg'],
+    ['bg-slash', 'Crimson Slash', '🗡️', 'bg'] ] },
 ];
 const SLOTS = ['common', 'common', 'common', 'common', 'uncommon', 'uncommon', 'uncommon', 'rare', 'rare', 'rare', 'epic', 'epic', 'legendary', 'legendary', 'croma'];
-const TAGS = PACKS.flatMap((p) => p.tags.map(([id, name, icon], i) => ({ id, name, icon, rarity: SLOTS[i], pack: p.id })));
+const TAGS = PACKS.flatMap((p) => p.tags.map(([id, name, icon, kind], i) => (kind ? { id, name, icon, rarity: SLOTS[i], pack: p.id, kind } : { id, name, icon, rarity: SLOTS[i], pack: p.id })));
 // Old tag ids from the first version are renamed so nobody loses what they already own.
 const OLD_TAG_IDS = { newbie: 'ghost', chill: 'candy-corn', lurker: 'cobweb', snacky: 'pumpkin-spice', 'night-owl': 'black-cat', gamer: 'bat-wing', 'meme-lord': 'trick-or-treat', vibes: 'witch-brew', 'big-brain': 'haunted', speedrunner: 'skeleton-crew', 'cozy-fire': 'jack-o-lantern', sunburst: 'vampire-kiss', 'warm-legend': 'headless-horseman', 'golden-goat': 'midnight-reaper' };
 const tagById = (id) => TAGS.find((t) => t.id === id);
@@ -689,6 +710,12 @@ const currentCost = () => {
 };
 const luckyChance = (r, luck) => (r.id === 'common' ? r.chance : r.chance * luck);
 
+// The profile effects a person wears (ring, name, background). Only things they actually own count.
+function fxOf(u) {
+  const out = {}, f = (u && u.fx) || {};
+  for (const k of ['ring', 'name', 'bg']) { const t = f[k] && tagById(f[k]); if (t && t.kind === k && (u.tags || []).includes(t.id)) out[k] = t.id; }
+  return out;
+}
 function econ(u) {
   if (Array.isArray(u.tags) && u.tags.some((t) => OLD_TAG_IDS[t])) u.tags = [...new Set(u.tags.map((t) => OLD_TAG_IDS[t] || t))];
   if (OLD_TAG_IDS[u.tag]) u.tag = OLD_TAG_IDS[u.tag];
@@ -701,6 +728,7 @@ function economyFor(u) {
   return {
     coins: u.coins,
     nextSpinAt: u.lastSpin ? u.lastSpin + spinCooldown() : 0,
+    equippedFx: fxOf(u),
     owned: u.tags,
     equipped: u.tag || null,
     now: Date.now(),
@@ -754,8 +782,12 @@ app.post('/api/machine/roll', auth, (req, res) => {
 app.post('/api/tags/equip', auth, (req, res) => {
   const u = econ(req.user);
   const id = req.body.tag ? String(req.body.tag) : null;
-  if (id && !u.tags.includes(id)) return res.status(400).json({ error: 'You do not own that tag yet' });
-  u.tag = id;
+  const kind = ['ring', 'name', 'bg'].includes(req.body.kind) ? req.body.kind : null;
+  if (id && !u.tags.includes(id)) return res.status(400).json({ error: 'You do not own that yet' });
+  const def = id && tagById(id);
+  if (def && def.kind) { u.fx = Object.assign({}, u.fx || {}, { [def.kind]: id }); }   // a profile effect
+  else if (!id && kind) { u.fx = Object.assign({}, u.fx || {}); delete u.fx[kind]; }  // take one off
+  else u.tag = id;
   save();
   broadcast({ t: 'members' });
   res.json(economyFor(u));
@@ -951,7 +983,7 @@ app.post('/api/users/:id/tags', auth, (req, res) => {
   const changed = [];
   for (const t of list) {
     const has = target.tags.includes(t.id);
-    if (take && has) { target.tags = target.tags.filter((x) => x !== t.id); if (target.tag === t.id) target.tag = null; changed.push(t); }
+    if (take && has) { target.tags = target.tags.filter((x) => x !== t.id); if (target.tag === t.id) target.tag = null; if (t.kind && target.fx && target.fx[t.kind] === t.id) delete target.fx[t.kind]; changed.push(t); }
     else if (!take && !has) { target.tags.push(t.id); changed.push(t); }
   }
   if (changed.length) audit(req.user, `${take ? 'took' : 'gave'} ${changed.length > 3 ? changed.length + ' tags' : changed.map((t) => t.name).join(', ')} ${take ? 'from' : 'to'} ${target.username}`);
@@ -2556,6 +2588,21 @@ function questView(u) {
     quests: questsToday(q.day).map((d) => ({ id: d.id, text: d.text, goal: d.goal, reward: d.reward, progress: q.progress[d.id] || 0, done: !!q.done[d.id] })) };
 }
 app.get('/api/quests', auth, (req, res) => { econ(req.user); res.json(questView(req.user)); });
+
+
+/* ---- profile pages: account number, joined date, views and message count ---- */
+const profileSeen = new Map(); // `${viewer}:${target}` -> time, so refreshing does not run the view count up
+app.get('/api/users/:id/profile', auth, (req, res) => {
+  const t = db.users[req.params.id];
+  if (!t) return res.status(404).json({ error: 'No such person' });
+  if (t.id !== req.user.id) {
+    const k = req.user.id + ':' + t.id, last = profileSeen.get(k) || 0;
+    if (Date.now() - last > 30 * 60000) { profileSeen.set(k, Date.now()); t.views = Math.min(1e9, (t.views || 0) + 1); save(); }
+  }
+  let messages = 0;
+  for (const list of Object.values(db.messages)) for (const m of list) if (m.userId === t.id && !m.system && !m.announce) messages++;
+  res.json({ id: t.id, acct: t.acct || 0, joined: t.createdAt, views: t.views || 0, messages });
+});
 
 /* ---- the welcome tour (shown once to new people) ---- */
 app.post('/api/tour-done', auth, (req, res) => { req.user.toured = true; save(); res.json({ ok: true }); });
