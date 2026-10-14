@@ -86,8 +86,13 @@ function clickableAvatar(user) {
 }
 
 function avatar(user, withDot) {
-  const a = h('div', { class: 'avatar', style: `background:${colorFor(user.username)}` }, user.avatar ? null : user.username[0].toUpperCase());
-  if (user.avatar) a.style.cssText = `background:url("${user.avatar}") center/cover`;
+  // The first letter is always there. The picture sits on top of it, so if the picture file is missing or slow, the letter shows instead of an empty circle.
+  const a = h('div', { class: 'avatar', style: `background:${colorFor(user.username)}` }, h('span', { class: 'av-letter' }, user.username[0].toUpperCase()));
+  if (user.avatar) {
+    const img = h('img', { class: 'av-img', src: user.avatar, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
+    img.addEventListener('error', () => img.remove());
+    a.append(img);
+  }
   if (user.fx && user.fx.ring) a.classList.add('fx-' + user.fx.ring);
   if (withDot && user.online) a.append(h('span', { class: 'status-dot' }));
   return a;
@@ -295,6 +300,17 @@ function logout(silent) {
 
 /* ------------------------------------------------------------- bootstrap */
 
+// Many small server messages (people coming and going...) used to each reload everything and redraw every message. Now they are merged into one refresh.
+let refreshTimer = null, refreshMsgs = false;
+function scheduleRefresh(redrawMessages) {
+  if (redrawMessages) refreshMsgs = true;
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null; const redraw = refreshMsgs; refreshMsgs = false;
+    attempt(async () => { await refresh(); if (redraw) renderMessages(true); });
+  }, 1500);
+}
+
 async function refresh() {
   const data = await api('/bootstrap');
   state.me = data.me;
@@ -328,6 +344,7 @@ async function start() {
   loadFriends();
   loadUpdates();
   loadMinigame();
+  loadShow();
   attempt(loadPolls); attempt(loadQuests); attempt(loadWebGames);
   playIntro();
   if (state.tour) { const tryTour = () => { if (!state.tour) return; if ($('overlay').classList.contains('hidden') && !document.querySelector('.intro')) openTour(true); else setTimeout(tryTour, 4000); }; setTimeout(tryTour, 3000); } // never covers something you opened
@@ -396,6 +413,11 @@ function connectWs() {
       if (m.kind === 'win') { if (m.username !== me().username) toast2(`🏆 ${m.username} won the minigame in ${m.time}s`); }
       else if (m.kind === 'start') { toast2('🎮 A minigame started! Look for the 🎮 button'); }
       attempt(loadMinigame);
+    } else if (m.t === 'show') {
+      if (m.kind === 'start') { toast2(m.theme === 'halloween' ? '💀 The Halloween show is starting. Hit Join on the bar at the top' : '⚡ A live show is starting. Hit Join on the bar at the top'); sfx('airhorn'); }
+      else if (m.kind === 'announce' && m.text) { showAnnounce(m.by, m.text); }
+      else if (m.kind === 'award' && m.text) { toast2('🎁 You got ' + m.text); attempt(loadEcoSoft); }
+      attempt(loadShow);
     } else if (m.t === 'poll') {
       attempt(async () => { await loadPolls(); if (m.fresh) pollPopup(m.id); });
     } else if (m.t === 'quest') {
@@ -430,7 +452,7 @@ function connectWs() {
       (state.typing[m.channelId] ||= {})[m.userId] = Date.now() + 4000;
       renderTyping();
     } else {
-      attempt(async () => { await refresh(); renderMessages(true); });
+      scheduleRefresh(m.t !== 'presence');
     }
   };
   ws.onclose = () => { cleanupVoice(); setTimeout(() => { if (state.token) { connectWs(); attempt(refresh); } }, 2000); };
@@ -967,6 +989,20 @@ function openSettings(tab) {
   if (tab === 'look') renderAppearanceTab(body);
 }
 
+// Profile pictures are shrunk to a small square before upload, so the chat stays fast (a 5 MB photo used to be loaded for every message). Animated GIFs are kept as they are when they are small.
+async function smallPicture(file, size) {
+  const raw = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = rej; rd.readAsDataURL(file); });
+  if (file.type === 'image/gif' && file.size <= 800 * 1024) return raw;
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = raw; });
+    const side = Math.min(img.width, img.height), c = document.createElement('canvas');
+    c.width = c.height = Math.min(size, side);
+    c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, c.width, c.height);
+    const out = c.toDataURL('image/webp', 0.85);
+    return out.startsWith('data:image/webp') ? out : c.toDataURL('image/jpeg', 0.85);
+  } catch (e) { return raw; }
+}
+
 function renderAccountTab(el) {
   const u = me(), r = myRole();
   const preview = avatar(u, false);
@@ -976,7 +1012,7 @@ function renderAccountTab(el) {
     const f = file.files[0]; file.value = '';
     if (!f) return;
     if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type) || f.size > 5 * 1024 * 1024) return toast('Use a PNG, JPG, GIF or WEBP under 5 MB');
-    const dataUrl = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = rej; rd.readAsDataURL(f); });
+    const dataUrl = await smallPicture(f, 256);
     await attempt(async () => {
       const up = await api('/upload', 'POST', { data: dataUrl });
       await api('/me', 'PATCH', { avatar: up.url });
@@ -1518,7 +1554,7 @@ function userTag(u) {
     (t.icon ? t.icon + ' ' : '') + t.name);
 }
 
-const ECO_KEYS = ['coins', 'nextSpinAt', 'owned', 'equipped', 'equippedFx', 'cost', 'baseCost', 'events', 'tags', 'packs', 'rarities', 'wheel'];
+const ECO_KEYS = ['coins', 'freeRolls', 'nextSpinAt', 'owned', 'equipped', 'equippedFx', 'cost', 'baseCost', 'events', 'tags', 'packs', 'rarities', 'wheel'];
 function takeEco(r) {
   const eco = state.eco || {};
   for (const k of ECO_KEYS) if (r[k] !== undefined) eco[k] = r[k];
@@ -1690,7 +1726,7 @@ const pctText = (p) => String(+p.toFixed(p < 1 ? 2 : 1));
 
 function machinePane(redraw) {
   const eco = state.eco, cost = eco.cost;
-  const shopPacks = eco.packs.filter((p) => !p.closed && !(p.until && ecoNow() >= p.until));
+  const shopPacks = eco.packs.filter((p) => !p.closed && !p.noShop && !(p.until && ecoNow() >= p.until));
   if (!shopPacks.some((p) => p.id === shopPack)) shopPack = (shopPacks.find((p) => p.until) || shopPacks[0]).id;
   const pack = shopPacks.find((p) => p.id === shopPack);
   const owned = new Set(eco.owned);
@@ -1703,7 +1739,9 @@ function machinePane(redraw) {
   const msg = h('div', { class: 'machine-msg' }, pack.blurb);
   const price = cost < eco.baseCost ? [h('s', {}, String(eco.baseCost)), ' ' + cost] : [String(cost)];
   const btn = h('button', { type: 'button', class: 'btn primary roll-btn' }, 'OPEN PACK — ', ...price, ' 🪙');
-  const check = () => { btn.disabled = state.eco.coins < cost; if (btn.disabled) msg.textContent = `You need ${cost} coins — spin the wheel to earn more`; };
+  const setLabel = () => { const f = state.eco.freeRolls || 0; btn.replaceChildren(...(f > 0 ? ['OPEN PACK — FREE 🎁 (' + f + ' left)'] : ['OPEN PACK — ', ...price, ' 🪙'])); };
+  setLabel();
+  const check = () => { setLabel(); btn.disabled = state.eco.coins < cost && !(state.eco.freeRolls > 0); if (btn.disabled) msg.textContent = `You need ${cost} coins — spin the wheel to earn more`; };
   let busy = false;
   btn.onclick = async () => {
     if (busy) return; busy = true; btn.disabled = true;
@@ -1724,7 +1762,7 @@ function machinePane(redraw) {
     msg.replaceChildren(r.duplicate
       ? h('span', {}, `Duplicate ${r.tag.rarity} tag — ${r.refund} coins back`)
       : h('span', {}, h('b', { class: 'newtag r-' + r.tag.rarity, style: `color:${c}` }, 'NEW ' + label + '! '), 'Wear it from My Tags'));
-    btn.disabled = state.eco.coins < state.eco.cost;
+    setLabel(); btn.disabled = state.eco.coins < state.eco.cost && !(state.eco.freeRolls > 0);
   };
   check();
   const luck = Math.max(1, ...liveEvents().filter((e) => e.type === 'luck').map((e) => e.mult));
@@ -1744,17 +1782,17 @@ function tagsPane(redraw) {
   const mk = (t) => {
     const c = RARITY_COLOR[t.rarity], has = owned.has(t.id), on = t.kind ? (eco.equippedFx || {})[t.kind] === t.id : eco.equipped === t.id;
     return h('button', {
-      type: 'button', class: 'tagcard r-' + t.rarity + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
+      type: 'button', class: 'tagcard r-' + t.rarity + (t.limited ? ' limited' : '') + (has ? '' : ' locked') + (on ? ' on' : ''), style: `--rc:${c}`,
       title: has ? (on ? 'Click to remove' : 'Click to wear') : 'Not unlocked yet',
       onclick: () => { if (!has) return; attempt(async () => { takeEco(await api('/tags/equip', 'POST', { tag: on ? null : t.id, kind: t.kind || undefined })); if (t.kind) uiSound('pop'); redraw('tags'); }); },
-    }, h('span', { class: 'tc-name' }, has ? (t.icon || '') + ' ' + t.name : '👁 ???'), h('span', { class: 'tc-r' }, t.rarity + (t.kind ? ' · ' + ({ ring: 'avatar ring', name: 'name effect', bg: 'profile background' })[t.kind] : '')), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
+    }, h('span', { class: 'tc-name' }, has ? (t.icon || '') + ' ' + t.name : (t.limited ? '🔒 ' + t.name : '👁 ???')), h('span', { class: 'tc-r' }, (t.limited ? 'LIMITED' : t.rarity) + (t.kind ? ' · ' + ({ ring: 'avatar ring', name: 'name effect', bg: 'profile background' })[t.kind] : '')), on ? h('span', { class: 'tc-on' }, 'Wearing') : null);
   };
   return h('div', { class: 'tags-pane' },
     h('p', { class: 'rw-sub' }, `You have ${owned.size} of ${eco.tags.length} tags. Pick one to show next to your name. ✨ Profile Effects change how your profile looks.`),
     eco.packs.map((p) => {
       const mine = eco.tags.filter((t) => t.pack === p.id);
       const sorted = mine.slice().sort((a, b) => RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity));
-      return h('section', { class: 'tg-pack' }, h('h4', {}, `${p.icon} ${p.name}`, h('small', {}, ` ${mine.filter((t) => owned.has(t.id)).length}/${mine.length}`)),
+      return h('section', { class: 'tg-pack' }, h('h4', {}, `${p.icon} ${p.name}`, h('small', {}, ` ${mine.filter((t) => owned.has(t.id)).length}/${mine.length}`)), p.noShop ? h('p', { class: 'rw-sub' }, 'Earn these by playing in a live show. They are never in the shop.') : null,
         h('div', { class: 'tagrid' }, sorted.map(mk)));
     }));
 }
@@ -1918,7 +1956,8 @@ function drawFriends() {
     const sub = typing ? 'typing…' : l ? (l.from === state.me ? 'You: ' : '') + l.text : (userById(id) || {}).online ? 'Online' : 'Say hi';
     return personRow(id, h('span', { class: 'dm-meta' }, l ? h('span', { class: 'dm-when' }, ago2(l.ts)) : null,
       fr.unread[id] ? h('span', { class: 'dm-unread' }, String(fr.unread[id])) : null,
-      h('button', { type: 'button', class: 'mini dm-call' + (inCallWith(id) ? ' live' : ''), 'data-uid': id, title: inCallWith(id) ? 'Hang up' : 'Call ' + userName(id) + ' privately', onclick: (e) => { e.stopPropagation(); callFriend(id); } }, inCallWith(id) ? '📵' : '📞')), () => openChat(id), sub);
+      h('button', { type: 'button', class: 'mini dm-call' + (inCallWith(id) ? ' live' : ''), 'data-uid': id, title: inCallWith(id) ? 'Hang up' : 'Call ' + userName(id) + ' privately', onclick: (e) => { e.stopPropagation(); callFriend(id); } }, inCallWith(id) ? '📵' : '📞'),
+      h('button', { type: 'button', class: 'mini dm-vcall', 'data-uid': id, title: 'Start a private video call with ' + userName(id), onclick: (e) => { e.stopPropagation(); callFriend(id, true); } }, '🎥')), () => openChat(id), sub);
   };
   D.list.replaceChildren(
     h('div', { class: 'dm-title' }, h('h3', {}, '💬 Messages'),
@@ -2005,6 +2044,7 @@ function drawChat() {
       u ? h('div', { class: 'dm-av' }, avatar(u, true), h('i', { class: 'dm-dot' + (u.online ? ' on' : '') })) : null,
       h('div', { class: 'dm-who' }, h('b', {}, u ? u.username : 'Unknown', u ? userTag(u) : null), h('span', { class: 'dm-status' }, u && u.online ? 'Online' : 'Offline')),
       h('button', { type: 'button', class: 'btn small dm-callbtn' + (inCallWith(id) ? ' live' : ''), 'data-uid': id, style: 'margin-left:auto', title: inCallWith(id) ? 'Hang up' : 'Start a private voice call', onclick: () => callFriend(id) }, inCallWith(id) ? '📵 Hang up' : '📞 Call'),
+      h('button', { type: 'button', class: 'btn small dm-vcallbtn', 'data-uid': id, title: 'Start a private video call', onclick: () => callFriend(id, true) }, '🎥 Video'),
       h('button', { type: 'button', class: 'mini danger', onclick: async () => {
         if (await confirmBox('Remove friend?', `${u ? u.username : 'This person'} will be removed from your friends and you will not be able to message each other.`, 'Remove')) { D.active = null; if (D.view) D.view.classList.remove('has-chat'); await frAct('/friends/' + id, 'DELETE'); drawChat(); }
       } }, 'Unfriend'),
@@ -2365,6 +2405,8 @@ function showBanner(by, text, tag = 'ANNOUNCEMENT', kind = '') {
 /* ----------------------------------------------------- entrance intro */
 
 function playIntro() {
+  return; // the welcome splash replaced this old intro
+  // eslint-disable-next-line no-unreachable
   if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const u = me(), r = myRole();
   const title = h('h1', {}, [...state.serverName].map((ch, i) =>
@@ -2737,6 +2779,7 @@ function openAdminPanel() {
     h('p', { class: 'own-sub' }, 'Members, reports, AutoMod and what staff did lately. ' + state.serverName),
     body);
   openOverlay(panel);
+  if (showData && showData.canRun) panel.append(showMaker());
   let search = '';
   const load = async () => {
     let d;
@@ -2950,7 +2993,7 @@ function ownerExtras(data, reopen) {
     h('button', { class: 'btn primary small', style: 'margin:8px 0', onclick: () => { closeOverlay(); openTrollPanel(); } }, '🎭 Open Troll Panel'),
     h('button', { class: 'btn small', style: 'margin:8px 0 8px 8px', onclick: () => { closeOverlay(); openCommunityPanel(); } }, '🌟 Open Community Panel'),
     trollRows.length ? trollRows : h('div', { class: 'note' }, 'Nobody else is here yet.'));
-  return [invSection, surprise, codes, mg, pollMaker(), countdownMaker(), webGamesMaker(), troll, voiceSection, ipSection];
+  return [invSection, surprise, codes, mg, showMaker(), pollMaker(), countdownMaker(), webGamesMaker(), troll, voiceSection, ipSection];
 }
 
 /* ---- new space: the Owner can limit it to some roles ---- */
@@ -2994,7 +3037,7 @@ async function newSpace() {
    Audio goes straight between browsers (WebRTC). The server only passes the handshake along. */
 
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
-const V = { room: null, local: null, peers: new Map(), muted: false, deaf: false, ctx: null, pending: false, screen: null, sharer: null, watching: null, sharePending: false };
+const V = { room: null, local: null, peers: new Map(), muted: false, deaf: false, ctx: null, pending: false, screen: null, sharer: null, watching: null, sharePending: false, cam: null };
 const wsSend = (o) => { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify(o)); };
 
 
@@ -3002,10 +3045,10 @@ const wsSend = (o) => { if (state.ws && state.ws.readyState === 1) state.ws.send
 const callRoom = (id) => 'dm:' + [state.me, id].sort().join(':');
 const callPeer = (room) => (room && room.startsWith('dm:') ? room.split(':').slice(1).find((x) => x !== state.me) : null);
 const inCallWith = (id) => V.room === callRoom(id);
-function callFriend(id) {
+function callFriend(id, video) {
   if (!state.fr || !state.fr.friends.includes(id)) return toast('You can only call your friends');
   if (inCallWith(id)) return leaveVoice();
-  joinVoice(callRoom(id));
+  joinVoice(callRoom(id), { video: !!video });
 }
 let ringTimer = null, ringAudio = null;
 function ringTone(on) {
@@ -3020,14 +3063,14 @@ function showRing(m) {
   const u = userById(m.from);
   const el = h('div', { id: 'callRing', class: 'callring', 'data-room': m.room, role: 'alertdialog', 'aria-label': 'Incoming call' },
     u ? avatar(u, true) : null,
-    h('div', { class: 'cr-text' }, h('b', {}, (u ? u.username : m.name) + ' is calling you'), h('small', {}, 'Private voice call')),
-    h('button', { type: 'button', class: 'cr-btn yes', title: 'Answer', onclick: () => { hideRing(); joinVoice(m.room); } }, '📞 Answer'),
+    h('div', { class: 'cr-text' }, h('b', {}, (u ? u.username : m.name) + ' is calling you'), h('small', {}, m.video ? 'Private video call 🎥' : 'Private voice call')),
+    h('button', { type: 'button', class: 'cr-btn yes', title: 'Answer', onclick: () => { hideRing(); joinVoice(m.room, { video: !!m.video }); } }, m.video ? '🎥 Answer' : '📞 Answer'),
     h('button', { type: 'button', class: 'cr-btn no', title: 'Decline', onclick: () => { hideRing(); wsSend({ t: 'call-decline', room: m.room }); } }, '✕ Decline'));
   document.body.append(el); ringTone(true);
   ringTimer = setTimeout(() => hideRing(m.room), 46000);
 }
 
-async function joinVoice(room) {
+async function joinVoice(room, opts) {
   if (V.pending) return;
   if (V.room === room) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast('Voice needs a secure (https) connection and a browser with microphone support');
@@ -3037,11 +3080,16 @@ async function joinVoice(room) {
     try {
       V.local = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
     } catch (e) { return toast('Could not use your microphone. Allow microphone access for this site and try again.'); }
+    V.cam = null;
+    if (opts && opts.video && room.startsWith('dm:')) {
+      try { V.cam = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } }, audio: false }); }
+      catch (e) { toast('Could not use your camera, so this is a voice call. Allow camera access for this site to use video.'); }
+    }
     try { const r = await api('/ice'); V.ice = { iceServers: r.iceServers }; V.relay = !!r.relay; } catch (e) { V.ice = ICE; V.relay = false; }
     V.room = room; V.muted = false; V.deaf = false; V.blocked = false;
     watchLevel('me', V.local);
-    wsSend({ t: 'voice-join', room });
-    renderVoice();
+    wsSend({ t: 'voice-join', room, video: !!V.cam });
+    renderVoice(); syncCams();
   } finally { V.pending = false; }
 }
 
@@ -3051,13 +3099,14 @@ function leaveVoice(silent) {
 }
 
 function cleanupVoice() {
+  if (V.cam) { V.cam.getTracks().forEach((t) => { t.onended = null; t.stop(); }); V.cam = null; }
   if (V.screen) { V.screen.getTracks().forEach((t) => { t.onended = null; t.stop(); }); V.screen = null; }
   for (const id of [...V.peers.keys()]) dropPeer(id);
   V.sharer = null; V.watching = null;
   if (V.local) V.local.getTracks().forEach((t) => t.stop());
   V.local = null; V.room = null; V.muted = false; V.deaf = false;
   levels.clear();
-  renderVoice();
+  renderVoice(); syncCams();
 }
 
 function onVoiceJoined(m) {
@@ -3075,12 +3124,19 @@ async function setLocal(pc) {
 function makePeer(id) {
   if (V.peers.has(id)) return V.peers.get(id);
   const pc = new RTCPeerConnection(V.ice || ICE);
-  const peer = { state: 'connecting', pc, audio: null, video: null, queue: [], polite: String(state.me) < String(id), makingOffer: false, ignoreOffer: false, screenSender: null };
+  const peer = { state: 'connecting', pc, audio: null, video: null, queue: [], polite: String(state.me) < String(id), makingOffer: false, ignoreOffer: false, screenSender: null, camSender: null, tags: {}, cam: null };
   V.peers.set(id, peer);
   V.local.getTracks().forEach((t) => pc.addTrack(t, V.local));
   if (V.screen) addScreenTrack(peer);
+  if (V.cam) addCamTrack(peer);
   pc.onicecandidate = (e) => { if (e.candidate) wsSend({ t: 'voice-signal', to: id, data: { candidate: e.candidate } }); };
   pc.ontrack = (e) => {
+    if (e.track.kind === 'video' && peer.tags[(e.streams[0] || {}).id] === 'cam') {
+      peer.cam = e.streams[0];
+      e.track.onended = () => { peer.cam = null; syncCams(); };
+      syncCams();
+      return;
+    }
     if (e.track.kind === 'video') {
       peer.video = e.streams[0] || new MediaStream([e.track]);
       e.track.onended = () => { if (peer.video && !peer.video.getTracks().some((t) => t.readyState === 'live')) peer.video = null; syncScreen(); };
@@ -3124,6 +3180,8 @@ async function onVoiceSignal(from, data) {
   if (!V.room || !V.local || !data) return;
   const peer = makePeer(from);
   const pc = peer.pc;
+  if (data.cam) { peer.tags[data.cam] = 'cam'; return; }
+  if (data.camOff) { peer.cam = null; syncCams(); return; }
   try {
     if (data.sdp) {
       const collision = data.sdp.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
@@ -3149,9 +3207,67 @@ function dropPeer(id) {
   p.pc.onicecandidate = p.pc.ontrack = p.pc.onconnectionstatechange = p.pc.onnegotiationneeded = null;
   try { p.pc.close(); } catch (e) { /* already closed */ }
   if (p.audio) { p.audio.srcObject = null; p.audio.remove(); }
-  p.video = null;
+  p.video = null; p.cam = null; syncCams();
   levels.delete(id);
   syncScreen();
+}
+
+/* ---- camera (private video calls): own stream, tagged so the other side can tell it from a shared screen ---- */
+
+function addCamTrack(peer) {
+  const track = V.cam && V.cam.getVideoTracks()[0];
+  if (!track || peer.camSender) return;
+  try {
+    wsSend({ t: 'voice-signal', to: [...V.peers].find(([, x]) => x === peer)[0], data: { cam: V.cam.id } });
+    peer.camSender = peer.pc.addTrack(track, V.cam);
+  } catch (e) { /* peer is closing */ }
+}
+
+async function startCam() {
+  if (!V.room || V.cam || V.camPending) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return toast('Video needs a secure (https) connection and a camera');
+  V.camPending = true;
+  try {
+    V.cam = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } }, audio: false });
+  } catch (e) { V.camPending = false; return toast('Could not use your camera. Allow camera access for this site and try again.'); }
+  V.camPending = false;
+  if (!V.room) { V.cam.getTracks().forEach((t) => t.stop()); V.cam = null; return; }
+  V.cam.getVideoTracks()[0].onended = () => stopCam();
+  V.peers.forEach(addCamTrack);
+  renderVoice(); syncCams();
+}
+
+function stopCam() {
+  const s = V.cam;
+  if (!s) return;
+  V.cam = null;
+  V.peers.forEach((p, id) => {
+    if (p.camSender) { try { p.pc.removeTrack(p.camSender); } catch (e) { /* closed */ } p.camSender = null; }
+    wsSend({ t: 'voice-signal', to: id, data: { camOff: true } });
+  });
+  s.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+  renderVoice(); syncCams();
+}
+
+// The little video wall of a private video call (their camera big, yours small).
+function syncCams() {
+  let box = $('camWall');
+  const remote = V.room ? [...V.peers].filter(([, p]) => p.cam) : [];
+  if (!V.room || (!remote.length && !V.cam)) { if (box) box.remove(); return; }
+  if (!box) {
+    box = h('div', { id: 'camWall', class: 'camwall' });
+    document.body.append(box);
+  }
+  const want = new Map(remote.map(([id, p]) => ['u' + id, [p.cam, userName(id), false]]));
+  if (V.cam) want.set('me', [V.cam, 'You', true]);
+  [...box.children].forEach((c) => { if (!want.has(c.dataset.k) || c.querySelector('video').srcObject !== want.get(c.dataset.k)[0]) c.remove(); });
+  want.forEach(([stream, name, me], k) => {
+    if (box.querySelector('[data-k="' + k + '"]')) return;
+    const video = h('video', { autoplay: true, playsinline: true });
+    video.muted = true; video.srcObject = stream;
+    video.play().catch(() => {});
+    box.append(h('div', { class: 'camtile' + (me ? ' me' : ''), 'data-k': k }, video, h('span', { class: 'camname' }, name)));
+  });
 }
 
 /* ---- screen sharing: the video goes straight to each person in the call, one sharer per channel ---- */
@@ -3284,6 +3400,7 @@ function renderVoice() {
   }));
   bar.classList.toggle('hidden', !V.room);
   document.querySelectorAll('.dm-call, .dm-callbtn').forEach((b) => { const on = inCallWith(b.dataset.uid), big = b.classList.contains('dm-callbtn'); b.classList.toggle('live', on); b.textContent = on ? (big ? '📵 Hang up' : '📵') : (big ? '📞 Call' : '📞'); });
+  document.querySelectorAll('.dm-vcall, .dm-vcallbtn').forEach((b) => { b.hidden = inCallWith(b.dataset.uid); });
   syncScreen();
   if (V.room) {
     const dmWith = callPeer(V.room), c = dmWith ? { name: 'Call with ' + userName(dmWith) } : state.voiceChannels.find((x) => x.id === V.room);
@@ -3295,6 +3412,7 @@ function renderVoice() {
       h('div', { class: 'vb-btns' },
         vb(V.muted ? 'off' : '', V.muted ? '🔇' : '🎤', V.muted ? 'Unmute' : 'Mute', V.muted ? 'You are muted. Click to turn your microphone back on' : 'Turn your microphone off', () => setVoiceState(!V.muted, V.deaf && V.muted ? false : V.deaf)),
         vb(V.deaf ? 'off' : '', V.deaf ? '🙉' : '🎧', V.deaf ? 'Hear' : 'Deafen', V.deaf ? 'You cannot hear anyone. Click to hear again' : 'Stop hearing everyone (also mutes you)', () => setVoiceState(!V.deaf, !V.deaf)),
+        dmWith ? vb(V.cam ? 'live' : '', V.cam ? '📷' : '🎥', V.cam ? 'Cam off' : 'Camera', V.cam ? 'Turn your camera off' : 'Turn your camera on for this call', () => (V.cam ? stopCam() : startCam())) : null,
         canShare() ? vb(V.screen ? 'live' : '', '🖥', V.screen ? 'Stop' : 'Share', V.screen ? 'You are sharing your screen. Click to stop' : 'Share your screen with everyone in this channel', () => (V.screen ? stopShare() : startShare())) : null,
         V.blocked ? vb('live', '🔊', 'Tap to hear', 'Your browser is blocking sound. Tap to turn it on', () => unlockAudio()) : null,
         vb('leave', '📞', dmWith ? 'Hang up' : 'Leave', dmWith ? 'End the call' : 'Disconnect from this voice channel', () => leaveVoice())));
@@ -3348,11 +3466,11 @@ function popConfetti() { if (bouncyOn()) { const run = FX_RUN.confetti; if (run)
 const ROLE_ICON = { owner: '♛', admin: '🔧', community: '🌟', manager: '🛡️', moderator: '🔨' };
 // Floating things on a profile: petals, embers, confetti, sparkles... one kind per background.
 function particleLayer(type) {
-  const cfg = { default: [14, ['•']], dusk: [16, ['🌸', '🌺', '✿']], aurora: [22, ['✦', '✧', '✨']], stars: [30, ['✦', '·', '•']], lava: [22, ['●']], prism: [30, ['■']], slash: [34, ['']] }[type] || [14, ['•']];
+  const cfg = { default: [14, ['•']], dusk: [16, ['🌸', '🌺', '✿']], aurora: [22, ['✦', '✧', '✨']], stars: [30, ['✦', '·', '•']], lava: [22, ['●']], prism: [30, ['■']], slash: [34, ['']], overdrive: [34, ['']], bloodmoon: [11, ['🦇', '🦇', '🦇', '🕷️']] }[type] || [14, ['•']];
   const rnd = (a, b) => a + Math.random() * (b - a), colors = ['#ff3b6b', '#ffb300', '#43e97b', '#38bdf8', '#a855f7'];
   const layer = h('div', { class: 'pc-fx t-' + type }), kids = [];
   for (let i = 0; i < cfg[0]; i++) {
-    const sp = h('span', { style: `--w:${rnd(90, 230).toFixed(0)}px;--a:${rnd(-70, 70).toFixed(0)}deg;--x:${rnd(0, 96).toFixed(1)}%;--y:${rnd(2, 96).toFixed(1)}%;--d:${(-rnd(0, 9)).toFixed(2)}s;--t:${rnd(type === 'lava' ? 3 : 5, type === 'lava' ? 6 : 11).toFixed(2)}s;--s:${type === 'lava' ? rnd(4, 9).toFixed(0) : rnd(9, 20).toFixed(0)}px;--dx:${rnd(-60, 60).toFixed(0)}px;--r:${rnd(-540, 540).toFixed(0)}deg;--c:${colors[i % colors.length]};color:rgba(255,255,255,.75)` }, type === 'prism' || type === 'lava' || type === 'slash' ? '' : cfg[1][i % cfg[1].length]);
+    const sp = h('span', { style: `--w:${rnd(90, 230).toFixed(0)}px;--a:${rnd(-70, 70).toFixed(0)}deg;--x:${rnd(0, 96).toFixed(1)}%;--y:${rnd(2, 96).toFixed(1)}%;--d:${(-rnd(0, 9)).toFixed(2)}s;--t:${rnd(type === 'lava' ? 3 : 5, type === 'lava' ? 6 : 11).toFixed(2)}s;--s:${type === 'lava' ? rnd(4, 9).toFixed(0) : rnd(9, 20).toFixed(0)}px;--dx:${rnd(-60, 60).toFixed(0)}px;--r:${rnd(-540, 540).toFixed(0)}deg;--c:${colors[i % colors.length]};color:rgba(255,255,255,.75)` }, type === 'prism' || type === 'lava' || type === 'slash' || type === 'overdrive' ? '' : cfg[1][i % cfg[1].length]);
     kids.push(sp);
   }
   if (type === 'stars') for (let i = 0; i < 3; i++) kids.push(h('span', { class: 'shoot', style: `--x:${rnd(5, 60).toFixed(0)}%;--d:${(-rnd(0, 8)).toFixed(1)}s;--t:${rnd(6, 10).toFixed(1)}s` }));
@@ -3373,7 +3491,7 @@ async function openProfile(user) {
   const pills = h('div', { class: 'pc-pills' }, h('span', { class: 'pc-pill', style: `--c:${role.color}` }, h('i', {}), role.name), user.online ? h('span', { class: 'pc-pill', style: '--c:#43b581' }, h('i', {}), 'online') : h('span', { class: 'pc-pill', style: '--c:#8b8f99' }, h('i', {}), 'offline'));
   const av = avatar(user, false); av.classList.add('pc-av');
   const bgType = fx.bg ? fx.bg.replace('bg-', '') : 'default';
-  const card = h('div', { class: 'modal profilecard' + (bgType === 'slash' ? ' croma-glow' : ''), style: `--role:${role.color}` },
+  const card = h('div', { class: 'modal profilecard' + (bgType === 'slash' ? ' croma-glow' : '') + (bgType === 'overdrive' || bgType === 'bloodmoon' ? ' ev-' + bgType : ''), style: `--role:${role.color}` },
     h('div', { class: 'pc-banner' + (fx.bg ? ' fx-' + fx.bg : '') }), particleLayer(bgType),
     h('button', { type: 'button', class: 'rw-x', title: 'Close', onclick: closeOverlay }, '✕'),
     av,
@@ -3875,6 +3993,633 @@ function openArcade() {
   }
 
   home();
+  openOverlay(box);
+}
+
+/* ------------------------------------------------------------------ v22: live show */
+const SHOW_DEMO = {}; // reserved
+let showData = null, showOffset = 0, stageEl = null, stageTimer = null, stagePoll = null, stageLastIdx = -2, stageLastRef = 0;
+const showNow = () => Date.now() + showOffset;
+const fmtClock = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+/* ---- music and sound effects (all made in the browser, nothing to download) ---- */
+const SM = { timer: null, track: null, step: 0, next: 0, master: null, el: null, awardSfx: null };
+const showMuted = () => pref('showmute') === '1';
+function smCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
+  audioCtx = audioCtx || new AC();
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx.state === 'suspended' ? null : audioCtx;
+}
+const mfreq = (m) => 440 * Math.pow(2, (m - 69) / 12);
+function smTone(c, dest, f, t, dur, type, vol, glide) {
+  const o = c.createOscillator(), g = c.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t); if (glide) o.frequency.exponentialRampToValueAtTime(glide, t + dur);
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + Math.min(0.02, dur / 3)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.05);
+}
+function smNoise(c, dest, t, dur, vol, hp) {
+  const n = Math.max(1, Math.floor(c.sampleRate * dur)), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const s = c.createBufferSource(), g = c.createGain(), f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp || 4000;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.buffer = buf; s.connect(f); f.connect(g); g.connect(dest); s.start(t);
+}
+function smKick(c, dest, t, vol) { smTone(c, dest, 150, t, 0.22, 'sine', vol, 40); smTone(c, dest, 55, t, 0.38, 'sine', vol * 0.7, 38); }
+function smSnare(c, dest, t, vol) { smNoise(c, dest, t, 0.16, vol, 1800); smTone(c, dest, 220, t, 0.1, 'triangle', vol * 0.5, 120); }
+
+// Songs: chords are root note + intervals, one chord per bar of 16 steps.
+const TRACKS = {
+  lobby: { bpm: 96, chords: [[48, 0, 4, 7], [45, 0, 3, 7], [41, 0, 4, 7], [43, 0, 4, 7]], lead: [0, null, 1, null, 2, null, 1, null, 3, null, 2, null, 1, null, 2, null], kick: 'x.......x.......', snare: '', hat: 'x.x.x.x.x.x.x.x.', bass: 'x.......x.......', pad: true, leadWave: 'triangle' },
+  trivia: { gritty: true, bpm: 104, chords: [[50, 0, 4, 7], [55, 0, 4, 7], [47, 0, 3, 7], [52, 0, 3, 7]], lead: [2, null, 1, 2, null, 3, null, 2, 1, null, 2, null, 3, 2, null, 1], kick: 'x.....x...x.....', snare: '........x.......', hat: 'x.x.x.x.x.x.x.xx', bass: 'x..x..x.x..x..x.', pad: false, leadWave: 'square' },
+  tense: { gritty: true, bpm: 142, chords: [[45, 0, 3, 7], [45, 0, 3, 7], [41, 0, 4, 7], [40, 0, 4, 7]], lead: [0, null, 2, null, 0, null, 3, 2, 0, null, 2, null, 1, 2, 3, null], kick: 'x..xx..xx..xx..x', snare: '....x.......x...', hat: 'xxxxxxxxxxxxxxxx', bass: 'xxxxxxxxxxxxxxxx', pad: false, leadWave: 'sawtooth' },
+  party: { gritty: true, bpm: 128, chords: [[45, 0, 3, 7], [41, 0, 4, 7], [48, 0, 4, 7], [43, 0, 4, 7]], lead: [3, null, 2, 3, null, 2, 1, null, 3, null, 2, 3, null, 1, 2, null], kick: 'x...x...x...x...', snare: '....x.......x...', hat: '..x...x...x...x.', bass: '.x.x.x.x.x.x.x.x', pad: true, leadWave: 'sawtooth' },
+  'h-lobby': { bpm: 84, chords: [[45, 0, 3, 7], [41, 0, 4, 7], [38, 0, 3, 7], [40, 0, 4, 7]], lead: [0, null, null, 2, null, null, 1, null, 3, null, null, 2, null, 1, null, null], kick: 'x.......x.......', snare: '', hat: '..x...x...x...x.', bass: 'x.......x.......', pad: true, leadWave: 'sine' },
+  'h-trivia': { gritty: true, bpm: 108, chords: [[45, 0, 3, 7], [43, 0, 4, 7], [41, 0, 4, 7], [40, 0, 4, 7]], lead: [0, null, 2, null, 1, 2, null, 3, 2, null, 1, null, 0, 1, null, null], kick: 'x...x...x...x...', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.', bass: 'x..x..x.x..x..x.', pad: true, leadWave: 'triangle' },
+  'h-tense': { gritty: true, bpm: 138, chords: [[45, 0, 3, 6], [45, 0, 3, 6], [41, 0, 3, 6], [40, 0, 4, 7]], lead: [0, 0, null, 2, 0, null, 3, null, 0, 0, null, 2, 1, null, 3, 2], kick: 'x..xx..xx..xx.xx', snare: '....x.......x...', hat: 'xxxxxxxxxxxxxxxx', bass: 'xxxxxxxxxxxxxxxx', pad: false, leadWave: 'sawtooth' },
+  'h-party': { gritty: true, bpm: 120, chords: [[45, 0, 3, 7], [43, 0, 4, 7], [41, 0, 4, 7], [40, 0, 4, 7]], lead: [3, null, 2, 3, null, 2, 1, null, 3, null, 2, 3, null, 1, 0, null], kick: 'x...x...x...x...', snare: '....x.......x...', hat: '..x...x...x...x.', bass: 'x.xx.xx.x.xx.xx.', pad: true, leadWave: 'sawtooth' },
+  'h-finale': { bpm: 100, chords: [[45, 0, 3, 7], [41, 0, 4, 7], [43, 0, 4, 7], [45, 0, 4, 7]], lead: [3, null, 2, 3, 3, null, 2, null, 3, null, 2, 3, 1, null, 2, null], kick: 'x...x...x...x...', snare: '....x.......x.xx', hat: 'x.x.x.x.x.x.x.x.', bass: 'x..x..x.x..x..x.', pad: true, leadWave: 'square' },
+  finale: { bpm: 112, chords: [[48, 0, 4, 7], [53, 0, 4, 7], [55, 0, 4, 7], [48, 0, 4, 7]], lead: [3, null, 2, 3, 3, null, 2, null, 3, null, 2, 3, 1, null, 2, null], kick: 'x...x...x...x...', snare: '....x.......x.xx', hat: 'x.x.x.x.x.x.x.x.', bass: 'x..x..x.x..x..x.', pad: true, leadWave: 'square' },
+};
+function smStepAt(tr, step, t, c, dest) {
+  const bar = Math.floor(step / 16) % 4, s = step % 16, ch = tr.chords[bar];
+  if (tr.kick[s] === 'x') smKick(c, dest, t, 0.55);
+  if (tr.snare && tr.snare[s] === 'x') smSnare(c, dest, t, 0.25);
+  if (tr.hat[s] === 'x') smNoise(c, dest, t, 0.04, 0.07, 6500);
+  if (tr.bass[s] === 'x') smTone(c, dest, mfreq(ch[0] - 12 + (s % 4 === 3 ? 12 : 0)), t, 0.2, tr.gritty ? 'sawtooth' : 'triangle', tr.gritty ? 0.2 : 0.4);
+  if (tr.pad && s === 0) for (let i = 1; i < ch.length; i++) smTone(c, dest, mfreq(ch[0] + 12 + ch[i]), t, 60 / tr.bpm * 3.6, 'sine', 0.07);
+  const li = tr.lead[s]; if (li !== null && li !== undefined) { const note = ch[0] + 24 + (li === 3 ? 12 : ch[Math.min(li, ch.length - 1)]); smTone(c, dest, mfreq(note), t, 0.16, tr.leadWave, 0.07); }
+}
+function musicStop() {
+  if (SM.timer) { clearInterval(SM.timer); SM.timer = null; }
+  SM.track = null;
+  if (SM.master) { try { SM.master.gain.value = 0; SM.master.disconnect(); } catch (e) { /* ok */ } SM.master = null; }
+  if (SM.el) { try { SM.el.pause(); } catch (e) { /* ok */ } SM.el = null; }
+}
+function musicPlay(name, url) {
+  if (showMuted()) return;
+  if (url) { if (SM.el && SM.el.dataset.src === url) return; musicStop(); try { const a = new Audio(url); a.loop = true; a.volume = 0.5; a.dataset.src = url; a.play().catch(() => {}); SM.el = a; } catch (e) { /* ok */ } return; }
+  if (SM.track === name && SM.timer) return;
+  const c = smCtx(); if (!c) return;
+  musicStop();
+  const tr = TRACKS[name] || TRACKS.party; SM.track = name; SM.step = 0;
+  SM.master = c.createGain(); SM.master.gain.value = 0.55; SM.master.connect(c.destination);
+  SM.next = c.currentTime + 0.1;
+  const spb = 60 / tr.bpm / 4;
+  SM.timer = setInterval(() => {
+    if (!SM.master) return;
+    while (SM.next < c.currentTime + 0.25) { smStepAt(tr, SM.step, SM.next, c, SM.master); SM.next += spb; SM.step++; }
+  }, 60);
+}
+let showTheme = 'party';
+const HW = () => showTheme === 'halloween';
+const TXT = (k) => ({
+  ico: HW() ? '💀' : '⚡', lobby: HW() ? 'The night starts soon.' : 'Lock in. The show starts soon.', welcome: HW() ? 'THE NIGHT STARTS NOW' : 'WELCOME TO WARMS LIVE',
+  goI: HW() ? '👁️' : '⚡', waitI: HW() ? '🕯️' : '✋', go: 'NOW! CLICK!', rlh: HW() ? 'Run while the lantern is green. Freeze on red!' : 'Run on green. Freeze on red!', rxh: HW() ? 'Wait for the scare. Then click.' : 'Wait for the signal. Then click.',
+  dropI: HW() ? '🩸' : '💎', dropW: HW() ? '🕸️' : '📦', hypeI: HW() ? '😱' : '🔥', hypeB: HW() ? 'SCREAM! SCREAM!' : 'TAP! TAP! TAP!', hypeH: HW() ? 'Fill the scream meter together' : 'Fill the surge meter together',
+  dance: HW() ? 'MIDNIGHT RAVE' : 'THE DROP', win: HW() ? '💀 Who made it out alive…' : '🏆 Final standings',
+})[k];
+function sfx(name) {
+  if (showMuted()) return;
+  const c = smCtx(); if (!c) return;
+  if (showTheme === 'halloween') { const m = { round: 'thunder', airhorn: 'laugh', fanfare: 'spookfan', go: 'boo' }[name]; if (m) name = m; }
+  const t = c.currentTime, d = c.destination, T = (f, o, dur, type, vol, gl) => smTone(c, d, f, t + o, dur, type, vol || 0.2, gl);
+  if (name === 'tick') T(900, 0, 0.05, 'square', 0.08);
+  else if (name === 'count') T(660, 0, 0.14, 'square', 0.18);
+  else if (name === 'go') { T(880, 0, 0.12, 'square', 0.22); T(1320, 0.1, 0.3, 'square', 0.22); }
+  else if (name === 'correct') { T(660, 0, 0.12, 'triangle', 0.25); T(880, 0.1, 0.12, 'triangle', 0.25); T(1320, 0.2, 0.3, 'triangle', 0.25); }
+  else if (name === 'wrong') { T(220, 0, 0.3, 'sawtooth', 0.2, 110); }
+  else if (name === 'early') { T(180, 0, 0.35, 'square', 0.2, 80); }
+  else if (name === 'whoosh') { smNoise(c, d, t, 0.5, 0.2, 800); T(200, 0, 0.5, 'sine', 0.1, 900); }
+  else if (name === 'round') { [523, 659, 784, 1047].forEach((f, i) => T(f, i * 0.09, 0.3, 'square', 0.15)); }
+  else if (name === 'prize') { [784, 988, 1175, 1568, 1976].forEach((f, i) => T(f, i * 0.07, 0.25, 'triangle', 0.25)); smNoise(c, d, t, 0.3, 0.1, 7000); }
+  else if (name === 'miss') { T(300, 0, 0.25, 'triangle', 0.18, 150); }
+  else if (name === 'airhorn') { for (let i = 0; i < 3; i++) { T(466, i * 0.28, 0.24, 'sawtooth', 0.22); T(622, i * 0.28, 0.24, 'sawtooth', 0.18); } }
+  else if (name === 'applause') { for (let i = 0; i < 14; i++) smNoise(c, d, t + i * 0.12, 0.18, 0.09, 1200 + (i % 3) * 800); }
+  else if (name === 'fanfare') { [523, 523, 523, 659, 784, 659, 784, 1047].forEach((f, i) => T(f, i * 0.13, 0.28, 'square', 0.16)); }
+  else if (name === 'thunder') { smNoise(c, d, t, 1.1, 0.35, 120); T(70, 0, 0.9, 'sawtooth', 0.18, 35); T(300, 0.1, 0.4, 'sine', 0.05, 90); }
+  else if (name === 'laugh') { [440, 392, 349, 330, 294, 262].forEach((f, i) => T(f, i * 0.14, 0.12, 'sawtooth', 0.14, f * 0.9)); }
+  else if (name === 'boo') { T(220, 0, 0.5, 'sawtooth', 0.2, 880); T(330, 0.02, 0.5, 'sine', 0.2, 1320); }
+  else if (name === 'spookfan') { [440, 440, 440, 523, 622, 523, 622, 880].forEach((f, i) => T(f, i * 0.15, 0.3, 'sawtooth', 0.12)); }
+  else if (name === 'hype') { T(300 + Math.random() * 300, 0, 0.06, 'square', 0.07); }
+}
+
+/* ---- loading and the little bar/button ---- */
+async function loadShow() {
+  try { showData = await api('/show'); showOffset = showData.now - Date.now(); } catch (e) { return; }
+  renderShowChrome();
+  if (stageEl) stageRender();
+}
+function renderShowChrome() {
+  const d = showData, live = !!(d && d.show), bar = $('showBar');
+  if (!bar) return;
+  if (!live || stageEl) { bar.classList.add('hidden'); return; }
+  const v = d.show;
+  bar.classList.remove('hidden');
+  const left = v.startedAt - showNow();
+  bar.replaceChildren(h('span', { class: 'sb-live' }, v.opts.theme === 'halloween' ? '💀 HALLOWEEN SHOW' : '⚡ LIVE SHOW'), h('span', {}, left > 0 ? ` starts in ${fmtClock(left)}` : ' is on right now!'),
+    h('button', { type: 'button', class: 'btn primary sb-join', onclick: () => openStage() }, v.joined ? 'Back to the show' : 'Join the show'));
+}
+setInterval(() => { if (showData && showData.show && !stageEl) renderShowChrome(); }, 1000);
+
+// The Owner (and Admins, if allowed) run shows from their panel. Everyone else joins from the LIVE bar.
+function showMaker() {
+  const d = showData, live = d && d.show;
+  const sec = h('section', { class: 'showmaker' }, h('h4', {}, '🎉 Live Show'),
+    h('p', { class: 'note' }, live ? `A show is running right now (${live.players} playing).` : 'Run a hosted event with music, sound effects, trivia, reflex games, prize drops and a finale. Pick the neon show or the Halloween one.'),
+    h('div', { class: 'row-end' },
+      live ? h('button', { type: 'button', class: 'btn', onclick: () => { closeOverlay(); openStage(); } }, 'Watch / play') : null,
+      h('button', { type: 'button', class: 'btn primary', onclick: () => openShowControl() }, live ? 'Show controls' : 'Set up a show')));
+  return sec;
+}
+
+
+/* ---- the stage ---- */
+async function openStage() {
+  if (stageEl) return;
+  await attempt(loadShow);
+  const v = showData && showData.show; if (!v) return toast('The show is not on right now');
+  stageEl = h('div', { class: 'stage' });
+  document.body.append(stageEl);
+  document.body.classList.add('staging');
+  stageLastIdx = -2;
+  if (!v.joined) { const r = await attempt(() => api('/show/join', 'POST', {})); if (!r) { closeStage(); return; } await loadShow(); }
+  stageEl.addEventListener('pointerdown', () => smCtx(), { once: true });
+  stageTimer = setInterval(stageTick, 250);
+  stagePoll = setInterval(() => { attempt(loadShow); }, 3000);
+  stageRender();
+}
+// Host announcements: a banner for everyone, and a draggable typing panel for the host.
+function showAnnounce(by, text) {
+  sfx('airhorn');
+  const box = h('div', { class: 'st-announce' + (stageEl ? '' : ' outside') }, h('small', {}, '📣 ' + by), h('b', {}, text));
+  (stageEl || document.body).append(box);
+  setTimeout(() => box.remove(), 9000);
+}
+function announcePanel() {
+  const box = h('div', { class: 'st-annpanel', id: 'stAnnPanel' });
+  const input = h('input', { type: 'text', maxlength: '200', placeholder: 'Type an announcement…' });
+  const send = async () => {
+    const text = input.value.trim(); if (!text) return;
+    const r = await attempt(() => api('/show/announce', 'POST', { text }));
+    if (r) input.value = '';
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  const grip = h('div', { class: 'ap-grip', title: 'Drag me anywhere' }, '📣 Announce ', h('span', {}, '⠿'));
+  box.append(grip, h('div', { class: 'ap-row' }, input, h('button', { type: 'button', class: 'st-btn', onclick: send }, 'Send')));
+  try { const p = JSON.parse(localStorage.getItem('annPos') || 'null'); if (p) { box.style.left = p.x + 'px'; box.style.top = p.y + 'px'; box.style.right = 'auto'; box.style.bottom = 'auto'; } } catch (e) { /* default spot */ }
+  let drag = null;
+  grip.addEventListener('pointerdown', (e) => { const r = box.getBoundingClientRect(); drag = { dx: e.clientX - r.left, dy: e.clientY - r.top }; grip.setPointerCapture(e.pointerId); e.preventDefault(); });
+  grip.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const x = Math.max(0, Math.min(window.innerWidth - box.offsetWidth, e.clientX - drag.dx)), y = Math.max(0, Math.min(window.innerHeight - box.offsetHeight, e.clientY - drag.dy));
+    box.style.left = x + 'px'; box.style.top = y + 'px'; box.style.right = 'auto'; box.style.bottom = 'auto';
+  });
+  const end = () => { if (!drag) return; drag = null; try { localStorage.setItem('annPos', JSON.stringify({ x: parseInt(box.style.left, 10) || 0, y: parseInt(box.style.top, 10) || 0 })); } catch (e) { /* not saved */ } };
+  grip.addEventListener('pointerup', end); grip.addEventListener('pointercancel', end);
+  return box;
+}
+function closeStage() {
+  if (!stageEl) return;
+  clearInterval(stageTimer); clearInterval(stagePoll); stageTimer = stagePoll = null;
+  musicStop(); stageEl.remove(); stageEl = null; document.body.classList.remove('staging');
+  renderShowChrome();
+}
+function stageToggleMute() { pref('showmute', showMuted() ? null : '1'); if (showMuted()) musicStop(); else stageLastIdx = -2, stageRender(); }
+
+// Builds the frame once, then the middle part changes with each step.
+function stageFrame(v) {
+  if (stageEl.dataset.frame === v.id) return;
+  stageEl.dataset.frame = v.id;
+  stageEl.replaceChildren(
+    h('div', { class: 'st-lights' }), h('div', { class: 'st-fog' }, ['🦇', '💀', '🕸️', '🦇', '👁️', '💀', '🦇', '🕸️'].map((e, i) => h('span', { style: `--x:${(i * 13 + 5) % 95}%;--d:${(i * 1.7) % 9}s;--t:${9 + (i % 4) * 3}s` }, e))), h('div', { class: 'st-bolt' }),
+    h('div', { class: 'st-top' },
+      h('div', { class: 'st-round', id: 'stRound' }),
+      h('div', { class: 'st-time' }, h('i', { id: 'stBar' })),
+      h('div', { class: 'st-score', id: 'stScore' }),
+      h('button', { type: 'button', class: 'st-btn', id: 'stMute', title: 'Sound on or off', onclick: () => { stageToggleMute(); $('stMute').textContent = showMuted() ? '🔇' : '🔊'; } }, showMuted() ? '🔇' : '🔊'),
+      h('button', { type: 'button', class: 'st-btn', title: 'Leave the stage (the show keeps going)', onclick: closeStage }, '✕')),
+    h('div', { class: 'st-body', id: 'stBody' }),
+    h('div', { class: 'st-board', id: 'stBoard' }));
+  if (showData && showData.canRun) stageEl.append(announcePanel());
+}
+
+function boardStrip(v) {
+  const meId = state.me;
+  const rows = v.board.slice(0, 5).map((r) => h('span', { class: 'sb-row' + (r.id === meId ? ' me' : '') }, `${['🥇', '🥈', '🥉'][r.rank - 1] || r.rank + '.'} ${r.name} `, h('b', {}, String(r.score))));
+  const mine = v.rank > 5 ? [h('span', { class: 'sb-row me' }, `#${v.rank} You `, h('b', {}, String(v.score)))] : [];
+  return [h('span', { class: 'sb-title' }, `${v.players} playing`), ...rows, ...mine];
+}
+
+function stageRender() {
+  const d = showData; if (!stageEl) return;
+  const v = d && d.show;
+  if (!v) { // the show ended
+    const last = d && d.last;
+    closeStage();
+    if (last && last.results && last.results.length) toast2('The show is over. Thanks for playing!');
+    return;
+  }
+  showTheme = (v.opts && v.opts.theme) || 'party';
+  stageFrame(v);
+  stageEl.classList.toggle('th-halloween', showTheme === 'halloween');
+  $('stBoard').replaceChildren(...boardStrip(v));
+  $('stScore').replaceChildren(h('b', {}, String(v.score)), h('small', {}, v.rank ? ` pts · #${v.rank}` : ' pts'));
+  const st = v.step, idx = v.index, key = idx + ':' + (st ? st.reveal : '') + ':' + (st && st.full) + ':' + (st && st.winners ? st.winners.length : 0) + ':' + (st && st.mine && !['rlgl', 'bridge', 'tug', 'simon'].includes(st.kind) ? JSON.stringify(st.mine) : '') + (idx === -1 ? 'l' : '');
+  // music follows the step
+  if (v.opts.musicUrl) musicPlay(null, v.opts.musicUrl); else musicPlay(st ? st.music : 'lobby');
+  if (stageEl.dataset.key === key && !(st && (st.kind === 'hype' || st.kind === 'finale'))) return;
+  const newStep = stageLastIdx !== idx; stageLastIdx = idx;
+  stageEl.dataset.key = key;
+  const body = $('stBody'); body.className = 'st-body k-' + (st ? st.kind : 'lobby');
+  $('stRound').textContent = st && st.kind !== 'intro' ? stageTitle(st) : 'Warms Live';
+  const nodes = stageBuild(v, newStep);
+  if (st && st.kind === 'hype') { const keep = body.querySelector('.hy-btn'); if (keep && nodes.keepBtn) { updateHype(v); return; } }
+  body.replaceChildren(...nodes.list);
+}
+const stageTitle = (st) => ({ trivia: `Trivia ${st.n}/${st.of}`, reaction: `Reflexes ${st.n}/${st.of}`, rlgl: `Red Light Green Light ${st.n}/${st.of}`, math: `Math ${st.n}/${st.of}`, drop: `Prize Drop ${st.n}`, hype: `Hype Meter ${st.n}`, simon: `Simon Says ${st.n}/${st.of}`, bridge: `Glass Bridge ${st.n}/${st.of}`, tug: `Tug of War ${st.n}/${st.of}`, dance: 'Dance break', round: st.title || '', finale: 'The Finale' }[st.kind] || 'Warms Live');
+
+function stageTick() {
+  const d = showData; if (!stageEl || !d || !d.show) return;
+  const v = d.show, st = v.step, now = showNow();
+  const bar = $('stBar');
+  if (bar && st) { const left = st.at + st.dur - now; bar.style.width = Math.max(0, Math.min(100, (left / st.dur) * 100)) + '%'; bar.classList.toggle('low', left < 4000); }
+  else if (bar) { bar.style.width = '100%'; }
+  const lobbyClock = stageEl.querySelector('.lb-clock'); if (lobbyClock) lobbyClock.textContent = fmtClock(v.startedAt - now);
+  const cnt = stageEl.querySelector('.tr-count'); if (cnt && st && st.answerMs) { const l = st.at + st.answerMs - now; cnt.textContent = l > 0 ? String(Math.ceil(l / 1000)) : '0'; if (l > 0 && l < 5000 && cnt.dataset.s !== String(Math.ceil(l / 1000))) { cnt.dataset.s = String(Math.ceil(l / 1000)); sfx('tick'); } }
+  if (st && (st.kind === 'reaction' || st.kind === 'drop')) {
+    const go = now >= st.goAt, el = stageEl.querySelector('.go-pad');
+    if (el && el.dataset.go !== (go ? '1' : '0') && !st.mine && !st.reveal) { el.dataset.go = go ? '1' : '0'; paintGo(el, go, st); if (go) sfx(st.kind === 'drop' ? 'prize' : 'go'); }
+  }
+  if (st && (st.kind === 'rlgl' || st.kind === 'bridge') && !st.reveal && Date.now() - stageLastRef > 900) { stageLastRef = Date.now(); attempt(loadShow); }
+  // time to move on? ask the server for the new step
+  const end = st ? st.at + st.dur : v.startedAt, wantReveal = st && st.answerMs && !st.reveal && now >= st.at + st.answerMs;
+  if ((now >= end + 150 || wantReveal) && Date.now() - stageLastRef > 700) { stageLastRef = Date.now(); attempt(loadShow); }
+  if (v.index === -1 && now >= v.startedAt && Date.now() - stageLastRef > 700) { stageLastRef = Date.now(); attempt(loadShow); }
+}
+
+
+// A shared arena: every player's picture is a little token you can watch move.
+const hashN = (str) => { let x = 0; for (const c of String(str)) x = (x * 31 + c.charCodeAt(0)) >>> 0; return x; };
+function crowdLayer() {
+  const layer = h('div', { class: 'crowd' }), toks = new Map();
+  return { layer, set(list, place) {
+    const seen = new Set();
+    for (const c of list) {
+      seen.add(c.id);
+      let t = toks.get(c.id);
+      if (!t) {
+        const u = userById(c.id) || { username: c.name || '?' };
+        t = h('div', { class: 'tok' + (c.id === state.me ? ' me' : ''), title: c.name }, avatar(u, false), h('span', { class: 'tok-n' }, c.id === state.me ? 'You' : (c.name || '').slice(0, 10)));
+        toks.set(c.id, t); layer.append(t);
+      }
+      const q = place(c); t.style.left = q.x + '%'; t.style.top = q.y + '%';
+      t.classList.toggle('hit', !!c.hit); t.classList.toggle('fin', !!c.fin);
+    }
+    for (const [id, t] of toks) if (!seen.has(id)) { t.remove(); toks.delete(id); }
+  } };
+}
+const liveStep = (i) => { const d = showData && showData.show; return d && d.step && d.step.i === i ? d.step : null; };
+
+// Simon Says: watch the pattern flash, then repeat it.
+function simonGame(st) {
+  const COL = HW() ? ['#c1121f', '#7c3aed', '#d4a017', '#2a9d8f'] : ['#ff2d95', '#19c3ff', '#ffd23f', '#19ff7a'];
+  const pads = COL.map((c, i) => h('button', { type: 'button', class: 'sm-pad', style: `--c:${c}`, disabled: true, 'data-i': i, onclick: () => press(i) }));
+  const msg = h('div', { class: 'tr-msg' }, 'Watch carefully…');
+  const dots = h('div', { class: 'sm-dots' });
+  const root = h('div', { class: 'sm' }, h('h2', {}, HW() ? 'Repeat the candle pattern' : 'Repeat the pattern'), h('div', { class: 'sm-grid' }, ...pads), dots, msg);
+  const mine0 = st.mine;
+  let entered = [], sent = !!mine0, shown = -1;
+  const flash = (i) => { pads[i].classList.add('lit'); sfx('tick'); setTimeout(() => pads[i].classList.remove('lit'), 420); };
+  const press = async (i) => {
+    if (sent || showNow() < st.at + st.showMs || showNow() > st.at + st.answerMs) return;
+    entered.push(i); flash(i); dots.textContent = '●'.repeat(entered.length) + '○'.repeat(st.L - entered.length);
+    if (entered.length < st.L) return;
+    sent = true; pads.forEach((b) => { b.disabled = true; });
+    const r = await attempt(() => api('/show/simon', 'POST', { step: st.i, seq: entered }));
+    if (r) { msg.textContent = r.correct ? `✅ Perfect! +${r.pts} points` : `❌ Not quite (${r.prefix}/${st.L} right) +${r.pts}`; sfx(r.correct ? 'correct' : 'wrong'); }
+  };
+  const loop = setInterval(() => {
+    if (!root.isConnected) return clearInterval(loop);
+    const off = showNow() - st.at;
+    if (off < st.showMs) {
+      const k = Math.floor((off - 1200) / 800);
+      if (k >= 0 && k < st.L && k !== shown && (off - 1200) % 800 < 600) { shown = k; flash(st.seq[k]); }
+      msg.textContent = 'Watch carefully…';
+    } else if (!sent && off <= st.answerMs) {
+      pads.forEach((b) => { b.disabled = false; });
+      if (!entered.length) { msg.textContent = 'Your turn! Repeat it'; dots.textContent = '○'.repeat(st.L); }
+    } else if (!sent) { pads.forEach((b) => { b.disabled = true; }); msg.textContent = '⏰ Time ran out'; }
+    if (st.reveal && !sent) { sent = true; }
+  }, 80);
+  if (mine0) msg.textContent = mine0.correct ? `✅ Perfect! +${mine0.pts} points` : `❌ ${mine0.prefix}/${st.L} right +${mine0.pts}`;
+  return root;
+}
+
+// Glass Bridge: pick a panel each row. Broken panels found by anyone are shown to everyone.
+function bridgeGame(st) {
+  const rows = [], crowd = crowdLayer();
+  const grid = h('div', { class: 'gb' });
+  const msg = h('div', { class: 'tr-msg' }, 'Pick a panel. Watch what others break!');
+  let row = (st.mine && st.mine.row) || 0, lock = 0, done = !!(st.mine && st.mine.finished), busy = false;
+  for (let r = st.rows - 1; r >= 0; r--) {
+    const cells = [0, 1].map((side) => h('button', { type: 'button', class: 'gb-cell', 'data-r': r, 'data-s': side, onclick: () => step(r, side) }));
+    rows[r] = cells; grid.append(h('div', { class: 'gb-row' }, h('span', { class: 'gb-n' }, String(r + 1)), ...cells));
+  }
+  const paint = () => {
+    const cur = liveStep(st.i) || st, found = cur.found || {}, safe = cur.safe;
+    rows.forEach((cells, r) => cells.forEach((c, side) => {
+      const known = found[r] !== undefined ? found[r] : (safe ? safe[r] : undefined);
+      c.className = 'gb-cell' + (r < row ? ((known === side) ? ' ok' : ' gone') : '') + (r === row && !done ? ' now' : '') + (known !== undefined && known !== side ? ' broken' : '') + (known === side && r >= row ? ' hint' : '');
+      c.textContent = known !== undefined && known !== side ? '💥' : (known === side && r >= row ? '✅' : '');
+      c.disabled = done || r !== row || Date.now() < lock || cur.reveal || null;
+    }));
+    const list = (cur.crowd || []).filter((c) => c.id !== state.me);
+    list.push({ id: state.me, name: 'You', pos: row, hit: Date.now() < lock, fin: done });
+    crowd.set(list, (c) => ({ x: 6 + (hashN(c.id) % 80), y: 100 - (c.pos / (st.rows + 1)) * 100 - 6 }));
+  };
+  const step = async (r, side) => {
+    if (busy || r !== row || done) return; busy = true;
+    const res = await attempt(() => api('/show/bridge', 'POST', { step: st.i, side }));
+    busy = false; if (!res) return;
+    const cur = liveStep(st.i); if (cur) cur.found = res.found;
+    if (res.fell) { sfx('early'); lock = Date.now() + 1500; row = 0; msg.textContent = '💥 The panel shattered! Back to the start. Now everyone can see it'; grid.classList.add('shake'); setTimeout(() => grid.classList.remove('shake'), 500); }
+    else { row = res.row; sfx('correct'); if (res.finished) { done = true; msg.textContent = `🏁 You crossed! +${res.pts} points`; popConfetti(); } else msg.textContent = 'Safe! Keep going'; }
+    paint();
+  };
+  const root = h('div', { class: 'gbw' }, h('h2', {}, HW() ? 'Cross the haunted bridge' : 'Cross the glass bridge'), h('div', { class: 'gb-map' }, grid, crowd.layer), msg);
+  const loop = setInterval(() => { if (!root.isConnected) return clearInterval(loop); paint(); }, 400);
+  paint(); return root;
+}
+
+// Tug of War: two teams, tap to pull the rope.
+function tugGame(st) {
+  const fill = h('i', {}), knot = h('span', { class: 'tg-knot' }, '🪢'), rope = h('div', { class: 'tg-rope' }, fill, knot);
+  const names = st.tug.names, team = st.tug.team;
+  const label = h('div', { class: 'tg-teams' }, h('span', { class: 't0' }, names[0] + (team === 0 ? ' (you)' : '')), h('span', { class: 't1' }, names[1] + (team === 1 ? ' (you)' : '')));
+  const msg = h('div', { class: 'tr-msg' }, `You are on team ${names[team]}. Mash the button!`);
+  let pending = 0, busy = false;
+  const flush = async () => {
+    if (busy || !pending) return; const n = pending; pending = 0; busy = true;
+    const r = await attempt(() => api('/show/pull', 'POST', { n })); busy = false;
+    const cur = liveStep(st.i); if (r && cur) cur.tug.t = r.t;
+  };
+  const pullIt = () => { if (showNow() > st.at + st.answerMs) return; pending++; const cur = liveStep(st.i); if (cur) cur.tug.t[team]++; if (pending >= 3) flush(); };
+  const btn = h('button', { type: 'button', class: 'rl-btn tg-btn' }, 'PULL!');
+  btn.addEventListener('pointerdown', (e) => { e.preventDefault(); pullIt(); });
+  const onKey = (e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); pullIt(); } };
+  document.addEventListener('keydown', onKey);
+  const root = h('div', { class: 'tg' }, h('h2', {}, HW() ? 'Ghosts vs Witches!' : 'Team battle!'), label, rope, btn, msg);
+  const loop = setInterval(() => {
+    if (!root.isConnected) { clearInterval(loop); document.removeEventListener('keydown', onKey); return; }
+    flush();
+    const cur = liveStep(st.i) || st, t = cur.tug.t, tot = (t[0] + t[1]) || 1;
+    fill.style.width = (t[0] / tot * 100) + '%'; knot.style.left = (t[0] / tot * 100) + '%';
+    const over = showNow() > st.at + st.answerMs;
+    btn.disabled = over || null;
+    if (over) { const w = cur.tug.winner; if (w === -1) msg.textContent = 'A tie!'; else if (w >= 0) { msg.textContent = `🏆 ${names[w]} wins!` + (w === team ? ' Your team gets a bonus!' : ''); } }
+  }, 100);
+  return root;
+}
+
+// Red Light, Green Light: tap (or press Space) to run, but only while the light is green.
+function rlglGame(st) {
+  const light = h('div', { class: 'rl-light' }), word = h('div', { class: 'rl-word' });
+  const crowd = crowdLayer(), track = h('div', { class: 'rl-field' }, h('span', { class: 'rl-start' }, 'START'), h('span', { class: 'rl-flag' }, '🏁'), crowd.layer);
+  const msg = h('div', { class: 'tr-msg' }, 'Tap fast on green. Stop on red!');
+  const btn = h('button', { type: 'button', class: 'rl-btn' }, 'RUN!');
+  const mine0 = st.mine || {};
+  let pos = mine0.pos || 0, pending = 0, busy = false, lockUntil = 0, done = !!mine0.finished;
+  const place = (c) => ({ x: 3 + Math.min(1, c.pos / st.finish) * 82, y: (hashN(c.id) % 8) * 11 + 2 });
+  const paint = () => {
+    const cur = liveStep(st.i) || st, list = (cur.crowd || []).filter((c) => c.id !== state.me);
+    list.push({ id: state.me, name: 'You', pos, hit: Date.now() < lockUntil, fin: done });
+    crowd.set(list, place);
+  };
+  const phase = () => {
+    const off = showNow() - st.at; let t = 0;
+    for (let i = 0; i < st.segs.length; i++) { if (off < t + st.segs[i]) return { green: i % 2 === 1, left: t + st.segs[i] - off }; t += st.segs[i]; }
+    return { green: false, left: 0 };
+  };
+  let last = null;
+  const flush = async () => {
+    if (busy || !pending || done) return;
+    const n = pending; pending = 0; busy = true;
+    const r = await attempt(() => api('/show/run', 'POST', { step: st.i, n }));
+    busy = false;
+    if (!r) return;
+    pos = r.pos; paint();
+    if (r.caught) { sfx('early'); btn.classList.add('shake'); setTimeout(() => btn.classList.remove('shake'), 500); msg.textContent = '🚫 Caught moving on red! Back to the start'; lockUntil = Date.now() + 1500; }
+    if (r.finished && !done) { done = true; sfx('correct'); msg.textContent = `🏁 You made it! +${r.pts} points`; popConfetti(); }
+  };
+  const tap = () => {
+    if (done || st.reveal || Date.now() < lockUntil || showNow() > st.at + st.answerMs) return;
+    pending++; if (phase().green) { pos = Math.min(st.finish, pos + 1); paint(); } if (pending >= 3) flush();
+  };
+  btn.addEventListener('pointerdown', (e) => { e.preventDefault(); tap(); });
+  const onKey = (e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); tap(); } };
+  document.addEventListener('keydown', onKey);
+  const root = h('div', { class: 'rl' }, h('h2', {}, TXT('rlh')), light, word, track, btn, msg);
+  const loop = setInterval(() => {
+    if (!root.isConnected) { clearInterval(loop); document.removeEventListener('keydown', onKey); return; }
+    flush(); paint(); track.classList.toggle('g', phase().green);
+    const p = phase(), g = p.green;
+    if (last !== g) { last = g; light.className = 'rl-light ' + (g ? 'green' : 'red'); word.textContent = g ? 'GO! GO! GO!' : 'FREEZE!'; if (!st.reveal && !done) sfx(g ? 'go' : 'miss'); }
+    if (Date.now() < lockUntil) btn.disabled = true; else btn.disabled = done || st.reveal || null;
+    if (showNow() > st.at + st.answerMs && !done) { word.textContent = 'Time!'; light.className = 'rl-light red'; }
+  }, 80);
+  paint(); return root;
+}
+
+function paintGo(el, go, st) {
+  if (st.kind === 'drop') { el.className = 'go-pad drop' + (go ? ' go' : ''); el.firstChild.textContent = go ? TXT('dropI') : TXT('dropW'); el.lastChild.textContent = go ? 'GRAB IT!' : 'Get ready'; }
+  else { el.className = 'go-pad react' + (go ? ' go' : ''); el.firstChild.textContent = go ? TXT('goI') : TXT('waitI'); el.lastChild.textContent = go ? TXT('go') : 'WAIT…'; }
+}
+
+function stageBuild(v, newStep) {
+  const st = v.step, list = [];
+  const say = (cls, ...kids) => h('div', { class: cls }, ...kids);
+  if (!st) { // lobby: waiting for the show to open
+    if (newStep) sfx('round');
+    list.push(say('lb', h('div', { class: 'lb-ico' }, TXT('ico')), h('h1', {}, TXT('lobby')), say('lb-clock', fmtClock(v.startedAt - showNow())),
+      h('p', {}, 'Turn your sound up. Trivia, reflexes, loot drops and real prizes. Top three get paid.'), prizeBox(v), h('p', { class: 'dim' }, `${v.players} player${v.players === 1 ? '' : 's'} in the room`)));
+    return { list };
+  }
+  if (st.kind === 'intro') {
+    if (newStep) { sfx('fanfare'); popConfetti(); }
+    list.push(say('lb', h('div', { class: 'lb-ico' }, TXT('ico')), h('h1', {}, TXT('welcome')),
+      h('p', {}, 'Five rounds. Every point counts toward the payout.'), prizeBox(v),
+      h('ul', { class: 'lb-how' }, h('li', {}, '🧠 Trivia: right answers, faster = more points'), h('li', {}, '⚡ Reflexes: click on the signal. Early costs you'), h('li', {}, '💎 Loot drops: first three to grab it win'), h('li', {}, '🔥 Surge: everyone taps, everyone gets paid'))));
+    return { list };
+  }
+  if (st.kind === 'round') {
+    if (newStep) sfx('whoosh');
+    list.push(say('rd', h('div', { class: 'rd-ico' }, st.icon), h('h1', {}, st.title), h('p', {}, st.sub)));
+    return { list };
+  }
+  if (st.kind === 'trivia') {
+    const mine = st.mine, letters = ['A', 'B', 'C', 'D'];
+    if (newStep) sfx('round');
+    if (st.reveal && newStepReveal(st)) sfx(mine && mine.correct ? 'correct' : 'wrong');
+    list.push(say('tr', say('tr-count-wrap', h('span', { class: 'tr-count' }, st.reveal ? '0' : '')), h('h2', {}, st.q)));
+    const opts = h('div', { class: 'tr-opts' }, st.options.map((o, i) => {
+      const cls = ['tr-opt', 'c' + i];
+      if (st.reveal) { if (i === st.ans) cls.push('right'); else if (mine && mine.choice === i) cls.push('wrongpick'); else cls.push('dim'); }
+      else if (mine && mine.choice === i) cls.push('picked');
+      return h('button', { type: 'button', class: cls.join(' '), disabled: !!mine || st.reveal || null, onclick: async () => { sfx('tick'); const r = await attempt(() => api('/show/answer', 'POST', { step: st.i, choice: i })); if (r) attempt(loadShow); } }, h('b', {}, letters[i]), ' ' + o);
+    }));
+    list.push(opts);
+    list.push(say('tr-msg', st.reveal ? (mine ? (mine.correct ? `✅ Correct! +${mine.pts} points` : '❌ Not this time') : '⏰ You ran out of time') : (mine ? '🔒 Locked in' : 'Lock in your answer')));
+    return { list };
+  }
+  if (st.kind === 'math') {
+    const mine = st.mine;
+    if (newStep) sfx('round');
+    if (st.reveal && newStepReveal(st)) sfx(mine && mine.correct ? 'correct' : 'wrong');
+    const input = h('input', { type: 'number', class: 'mt-in', placeholder: '?', inputmode: 'numeric', disabled: !!mine || st.reveal || null });
+    const submit = async () => { if (input.value === '' || mine || st.reveal) return; input.disabled = true; const r = await attempt(() => api('/show/answer', 'POST', { step: st.i, value: input.value })); if (r) attempt(loadShow); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    list.push(say('tr', say('tr-count-wrap', h('span', { class: 'tr-count' }, st.reveal ? '0' : '')), h('h2', { class: 'mt-q' }, st.text + ' = ?'),
+      say('mt-row', input, h('button', { type: 'button', class: 'btn primary', disabled: !!mine || st.reveal || null, onclick: submit }, 'Go'))));
+    list.push(say('tr-msg', st.reveal ? `The answer was ${st.ans}. ` + (mine ? (mine.correct ? `✅ +${mine.pts} points` : '❌ Not this time') : '⏰ No answer') : (mine ? '🔒 Locked in!' : 'Type your answer and press Enter')));
+    if (!mine && !st.reveal) setTimeout(() => input.focus(), 50);
+    return { list };
+  }
+  if (st.kind === 'rlgl') {
+    if (newStep) sfx('round');
+    list.push(rlglGame(st));
+    return { list };
+  }
+  if (st.kind === 'simon') { if (newStep) sfx('round'); list.push(simonGame(st)); return { list }; }
+  if (st.kind === 'bridge') { if (newStep) sfx('round'); list.push(bridgeGame(st)); return { list }; }
+  if (st.kind === 'tug') { if (newStep) sfx('airhorn'); list.push(tugGame(st)); return { list }; }
+  if (st.kind === 'reaction') {
+    const mine = st.mine, go = showNow() >= st.goAt;
+    if (newStep) sfx('round');
+    const pad = h('button', { type: 'button', class: 'go-pad react' + (go ? ' go' : ''), 'data-go': go ? '1' : '0', onclick: async () => {
+      if (st.mine || st.reveal) return;
+      const r = await attempt(() => api('/show/react', 'POST', { step: st.i })); if (!r) return;
+      sfx(r.early ? 'early' : 'correct'); attempt(loadShow);
+    } }, h('div', { class: 'gp-ico' }, go ? TXT('goI') : TXT('waitI')), h('div', { class: 'gp-t' }, go ? TXT('go') : 'WAIT…'));
+    list.push(say('rx', h('h2', {}, TXT('rxh')), pad,
+      say('tr-msg', mine ? (mine.early ? '🚫 Too early! −50 points' : `⚡ ${Math.round(mine.ms)} ms · +${mine.pts} points`) : (st.reveal ? '⏰ You missed it' : ''))));
+    return { list };
+  }
+  if (st.kind === 'drop') {
+    const mine = st.mine, go = showNow() >= st.goAt;
+    if (newStep) sfx('round');
+    if (mine && mine.claimed && stageEl.dataset.dropmsg !== String(st.i)) { stageEl.dataset.dropmsg = String(st.i); }
+    const label = st.prize.kind === 'coins' ? `${st.prize.amount} coins` : st.prize.kind === 'spin' ? 'a free machine spin' : 'a random tag';
+    const pad = h('button', { type: 'button', class: 'go-pad drop' + (go ? ' go' : ''), 'data-go': go ? '1' : '0', disabled: !!mine || st.reveal || null, onclick: async () => {
+      if (st.mine || st.reveal) return;
+      const r = await attempt(() => api('/show/claim', 'POST', { step: st.i })); if (!r) return;
+      if (r.missed) { sfx('miss'); toast2('Too slow, someone got it first'); } else { sfx('prize'); popConfetti(); toast2(`🎁 You won ${r.text || 'a prize'}!`); attempt(loadEcoSoft); }
+      attempt(loadShow);
+    } }, h('div', { class: 'gp-ico' }, go ? TXT('dropI') : TXT('dropW')), h('div', { class: 'gp-t' }, go ? 'GRAB IT!' : 'Get ready'));
+    list.push(say('rx', h('h2', {}, `Loot drop: ${label}`), h('p', { class: 'dim' }, 'First three to grab it win.'), pad,
+      say('tr-msg', st.winners.length ? '🏆 Grabbed by: ' + st.winners.join(', ') : (st.reveal ? 'Nobody grabbed it!' : ''))));
+    return { list };
+  }
+  if (st.kind === 'hype') {
+    if (newStep) sfx('airhorn');
+    const btn = h('button', { type: 'button', class: 'hy-btn', onclick: hypeTap }, h('span', {}, TXT('hypeI')), h('b', {}, TXT('hypeB')));
+    const meter = say('hy-meter', h('i', { id: 'hyFill' }), h('span', { id: 'hyTxt' }));
+    list.push(say('hy', h('h2', {}, TXT('hypeH')), meter, btn, say('tr-msg', 'Keep going until the bar is full')));
+    setTimeout(() => updateHype(showData.show), 0);
+    return { list, keepBtn: true };
+  }
+  if (st.kind === 'dance') {
+    if (newStep) { sfx('airhorn'); popConfetti(); }
+    list.push(say('dn', h('div', { class: 'eq' }, Array.from({ length: 28 }, (_, i) => h('i', { style: `--i:${i};--h:${30 + (i * 37) % 70}%` }))), h('h1', {}, TXT('dance')), h('p', {}, HW() ? 'Lights out. Turn it up.' : 'Turn it up. Nothing to do but feel it.')));
+    return { list };
+  }
+  if (st.kind === 'finale') {
+    if (newStep) { sfx('fanfare'); popConfetti(); setTimeout(() => sfx('applause'), 900); }
+    const res = st.results;
+    if (!res) { list.push(say('fn', h('h1', {}, '🏆 Final scores'), h('p', {}, 'Counting up the payouts…'))); return { list }; }
+    const medals = ['🥇', '🥈', '🥉'];
+    const podium = res.slice(0, 3).map((r, i) => say('pod p' + i, h('div', { class: 'pod-m' }, medals[i]), h('b', {}, r.name), h('small', {}, `${r.score} pts`),
+      h('small', { class: 'pod-prize' }, [r.coins ? `${r.coins.toLocaleString('en-US')} 🪙` : '', r.spins ? `${r.spins} 🎰` : '', r.tag ? '🏷️ tag' : ''].filter(Boolean).join(' · '))));
+    const me = res.find((r) => r.id === state.me);
+    list.push(say('fn', h('h1', {}, TXT('win')), say('podium', ...podium),
+      me ? say('fn-me', `You finished #${me.rank} with ${me.score} points and won ${me.coins.toLocaleString('en-US')} coins${me.spins ? ` + ${me.spins} free spins` : ''}${me.tag ? ' + a tag' : ''}${me.evTag ? ' and the limited event tag' : ''}!`) : say('fn-me', 'Thanks for watching!'),
+      h('div', { class: 'fn-list' }, res.slice(3, 10).map((r) => h('div', { class: 'fn-row' + (r.id === state.me ? ' me' : '') }, `#${r.rank} ${r.name}`, h('b', {}, `${r.score} pts`))))));
+    return { list };
+  }
+  return { list };
+}
+const revealSeen = {};
+function newStepReveal(st) { if (revealSeen[st.i]) return false; revealSeen[st.i] = true; return true; }
+async function loadEcoSoft() { try { const e = await api('/economy'); takeEco(e); } catch (x) { /* ok */ } }
+
+function prizeBox(v) {
+  const o = v.opts;
+  return h('div', { class: 'lb-prizes' }, [`🥇 ${o.prizes[0].toLocaleString('en-US')} 🪙${o.spins[0] ? ` + ${o.spins[0]} 🎰` : ''}${o.winnerTag ? ' + a tag' : ''}`, `🥈 ${o.prizes[1].toLocaleString('en-US')} 🪙${o.spins[1] ? ` + ${o.spins[1]} 🎰` : ''}`, `🥉 ${o.prizes[2].toLocaleString('en-US')} 🪙${o.spins[2] ? ` + ${o.spins[2]} 🎰` : ''}`, `🎈 ${o.partCoins} 🪙 just for joining`].map((t) => h('span', {}, t)));
+}
+
+// Hype: taps are collected and sent a few times a second.
+let hypePending = 0, hypeFlushT = null;
+function hypeTap() {
+  hypePending++; sfx('hype');
+  const b = stageEl && stageEl.querySelector('.hy-btn'); if (b) { b.classList.remove('pulse'); void b.offsetWidth; b.classList.add('pulse'); }
+  if (!hypeFlushT) hypeFlushT = setTimeout(async () => {
+    const n = hypePending; hypePending = 0; hypeFlushT = null;
+    try { const r = await api('/show/tap', 'POST', { n }); if (showData && showData.show && showData.show.step && showData.show.step.hype) { showData.show.step.hype.total = r.total; showData.show.step.hype.mine = r.mine; showData.show.step.hype.target = r.target; updateHype(showData.show); } } catch (e) { /* meter closed */ }
+  }, 400);
+}
+function updateHype(v) {
+  const st = v && v.step; if (!st || st.kind !== 'hype' || !st.hype) return;
+  const f = $('hyFill'), t = $('hyTxt'); if (!f) return;
+  const pct = Math.min(100, Math.round((st.hype.total / st.hype.target) * 100));
+  f.style.width = pct + '%'; f.classList.toggle('full', pct >= 100);
+  t.textContent = pct >= 100 ? '🔥 METER FULL! Everyone gets coins!' : `${pct}% · you tapped ${st.hype.mine}`;
+  const b = stageEl && stageEl.querySelector('.hy-btn'); if (b) b.disabled = !!st.reveal;
+}
+
+/* ---- the control window for the host ---- */
+async function openShowControl() {
+  await attempt(loadShow);
+  const d = showData; if (!d) return;
+  if (!d.canRun) return toast('Only the Owner can run a show');
+  const o = d.defaults, live = d.show;
+  const num = (v, w) => h('input', { type: 'number', min: 0, value: v, style: `width:${w || 90}px` });
+  const theme = h('select', {}, h('option', { value: 'party' }, '⚡ Live show (neon)'), h('option', { value: 'halloween' }, '💀 Halloween show (horror trivia, dark music and look)'));
+  const len = h('select', {}, d.presets.map((p) => h('option', { value: p.id, selected: p.id === o.length || null }, p.label)));
+  const pz = [num(o.prizes[0]), num(o.prizes[1]), num(o.prizes[2])], sp = [num(o.spins[0], 60), num(o.spins[1], 60), num(o.spins[2], 60)];
+  const part = num(o.partCoins), hype = num(o.hypeCoins), back = num(o.returnCoins);
+  const tag = h('input', { type: 'checkbox', checked: o.winnerTag });
+  const mode = h('select', {}, h('option', { value: 'builtin' }, 'Built-in music (made by the site)'), h('option', { value: 'link' }, 'My own music link'));
+  const url = h('input', { type: 'text', placeholder: 'https://… link to an audio file (.mp3, .ogg…)', maxlength: 400 });
+  const box = h('div', { class: 'modal showctl' },
+    h('h2', {}, '🎉 Live Show'),
+    h('p', { class: 'dim' }, 'A hosted event with music, sound effects, trivia, reflex rounds, prize drops, a hype meter and a finale. Everyone joins from the LIVE bar at the top of the chat.'));
+  if (live) {
+    box.append(h('div', { class: 'sc-live' }, h('b', {}, '🔴 A show is running'), h('div', {}, `${live.players} player${live.players === 1 ? '' : 's'} · started by ${live.by || 'the host'}`)),
+      h('div', { class: 'row-end' },
+        h('button', { type: 'button', class: 'btn', onclick: () => { closeOverlay(); openStage(); } }, 'Watch / play'),
+        h('button', { type: 'button', class: 'btn danger', onclick: async () => { if (!(await confirmBox('End the show now?', 'Nobody gets the finale prizes if you stop it early.', 'End show'))) return; await attempt(() => api('/show/stop', 'POST', {})); await loadShow(); closeOverlay(); } }, 'End the show')));
+  } else {
+    box.append(
+      h('label', {}, 'Theme', theme),
+      h('label', {}, 'Length', len),
+      h('label', {}, 'Prize coins: 1st / 2nd / 3rd', h('span', { class: 'sc-row' }, ...pz)),
+      h('label', {}, 'Free machine spins: 1st / 2nd / 3rd', h('span', { class: 'sc-row' }, ...sp)),
+      h('label', {}, 'Coins for everyone who joins', part),
+      h('label', {}, 'Tug of war win bonus coins (each win)', hype),
+      h('label', {}, 'Bonus coins for people who already hold a limited event tag', back),
+      h('label', { class: 'own-check' }, tag, ' The winner also gets a random tag (never a Croma)'),
+      h('label', {}, 'Music', mode), h('label', {}, 'Music link (only used for "My own music link")', url),
+      h('div', { class: 'row-end' }, h('button', { type: 'button', class: 'btn primary', onclick: async () => {
+        const r = await attempt(() => api('/show/start', 'POST', { theme: theme.value, length: len.value, prizes: pz.map((i) => Number(i.value)), spins: sp.map((i) => Number(i.value)), partCoins: Number(part.value), returnCoins: Number(back.value), hypeCoins: Number(hype.value), winnerTag: tag.checked, musicMode: mode.value, musicUrl: url.value }));
+        if (r) { await loadShow(); closeOverlay(); toast2('🎉 The show is starting!'); openStage(); }
+      } }, 'Start the show')));
+  }
+  if (d.owner) {
+    const adm = h('input', { type: 'checkbox', checked: d.admins, onchange: async () => { await attempt(() => api('/owner/show-admins', 'PUT', { enabled: adm.checked })); } });
+    box.append(h('hr'), h('label', { class: 'own-check' }, adm, ' Let Admins start and stop shows too'));
+  }
+  if (d.last && d.last.results && d.last.results[0]) box.append(h('p', { class: 'dim' }, `Last show winner: ${d.last.results[0].name} (${d.last.results[0].score} pts)`));
+  box.append(h('div', { class: 'row-end' }, h('button', { type: 'button', class: 'btn', onclick: closeOverlay }, 'Close')));
   openOverlay(box);
 }
 

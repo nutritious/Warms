@@ -79,4 +79,10 @@ async function flush() {
   await Promise.race([drain(), new Promise((r) => setTimeout(r, 8000))]);
 }
 
-module.exports = { init, mirrorDb, mirrorFile, flush, enabled };
+// A picture that is missing from the disk (for example after the host wiped it) can still be fetched from the database.
+async function getFile(name) {
+  if (!enabled || !pool || !/^[a-f0-9]+\.(png|jpg|gif|webp)$/.test(name)) return null;
+  try { const r = await pool.query('SELECT data FROM warms_files WHERE name = $1', [name]); return r.rows[0] ? r.rows[0].data : null; } catch (e) { return null; }
+}
+
+module.exports = { init, mirrorDb, mirrorFile, flush, enabled, getFile };

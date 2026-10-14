@@ -114,6 +114,9 @@ for (const c of db.channels) if (!c.spaceId) c.spaceId = db.spaces[0].id;
     for (const c of db.channels.filter((x) => x.spaceId === STAFF_HUB)) db.messages[c.id] = db.messages[c.id] || [];
   }
   db.minigame = db.minigame && typeof db.minigame === 'object' ? db.minigame : null;
+db.show = db.show && typeof db.show === 'object' ? db.show : null;
+db.lastShow = db.lastShow && typeof db.lastShow === 'object' ? db.lastShow : null;
+db.showAdmins = db.showAdmins === true;
   if (!db.codes || typeof db.codes !== 'object' || Array.isArray(db.codes)) db.codes = {};
   if (!Array.isArray(db.ipBans)) db.ipBans = [];
   if (!Array.isArray(db.polls)) db.polls = [];
@@ -350,7 +353,7 @@ function endRing(room, answered) {
   if (answered) sendTo(r.to, { t: 'call-cancel', room, answered: true });
   else sendTo(r.to, { t: 'call-cancel', room });
 }
-function startRing(room, from, to) {
+function startRing(room, from, to, video) {
   endRing(room, false);
   const timer = setTimeout(() => {
     if (!ringing.has(room)) return;
@@ -360,7 +363,7 @@ function startRing(room, from, to) {
     voiceLeave(from.id);
   }, 45000);
   ringing.set(room, { room, from: from.id, to: to.id, timer });
-  sendTo(to.id, { t: 'call-ring', room, from: from.id, name: from.username });
+  sendTo(to.id, { t: 'call-ring', room, from: from.id, name: from.username, video: !!video });
 }
 function handleVoice(ws, userId, m) {
   const user = db.users[userId];
@@ -377,7 +380,7 @@ function handleVoice(ws, userId, m) {
     voice.set(userId, { room: m.room, ws, muted: false, deaf: false });
     send({ t: 'voice-joined', room: m.room, peers: here.map(([id]) => id) });
     if (here.length) endRing(m.room, true);
-    else if (online.has(other.id)) startRing(m.room, user, other);
+    else if (online.has(other.id)) startRing(m.room, user, other, m.video === true);
     else { send({ t: 'call-missed', to: other.username, offline: true }); voiceLeave(userId); return; }
     voiceBroadcast();
   } else if (m.t === 'call-decline') {
@@ -463,6 +466,15 @@ app.use((req, res, next) => {
   next();
 });
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d', index: false }));
+// If a picture is missing from the disk but is in the external database, bring it back right now.
+app.get('/uploads/:name', async (req, res) => {
+  const name = String(req.params.name || '');
+  const buf = await store.getFile(name);
+  if (!buf) return res.status(404).end();
+  try { fs.writeFileSync(path.join(UPLOAD_DIR, name), buf); } catch (e) { /* serve it anyway */ }
+  const ext = name.split('.').pop();
+  res.type({ png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }[ext] || 'application/octet-stream').set('Cache-Control', 'public, max-age=3600').send(buf);
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* ------------------------------------------------------------------ invites (the site is invite only)
@@ -668,11 +680,16 @@ const PACKS = [
     ['ring-galaxy', 'Galaxy Ring', '🪐', 'ring'], ['name-glitch', 'Glitch Name', '👾', 'name'],
     ['name-gold', 'Gold Shimmer', '👑', 'name'], ['bg-lava', 'Lava Flow', '🌋', 'bg'],
     ['bg-slash', 'Crimson Slash', '🗡️', 'bg'] ] },
+  { id: 'event', name: 'Limited Event Tags', icon: '🏅', blurb: 'Only from live shows. Not in the shop', noShop: true, tags: [
+    ['show-live', 'Neon Overdrive', '⚡', null, 'legendary'], ['show-halloween', 'Blood Moon Rave', '🌕', null, 'legendary'],
+    ['bg-overdrive', 'Overdrive Grid', '🌐', 'bg', 'legendary'], ['bg-bloodmoon', 'Crimson Eclipse', '🩸', 'bg', 'legendary'] ] },
 ];
 const SLOTS = ['common', 'common', 'common', 'common', 'uncommon', 'uncommon', 'uncommon', 'rare', 'rare', 'rare', 'epic', 'epic', 'legendary', 'legendary', 'croma'];
-const TAGS = PACKS.flatMap((p) => p.tags.map(([id, name, icon, kind], i) => (kind ? { id, name, icon, rarity: SLOTS[i], pack: p.id, kind } : { id, name, icon, rarity: SLOTS[i], pack: p.id })));
+const TAGS = PACKS.flatMap((p) => p.tags.map(([id, name, icon, kind, rar], i) => { const t = { id, name, icon, rarity: rar || SLOTS[i], pack: p.id }; if (kind) t.kind = kind; if (p.noShop) t.limited = true; return t; }));
 // Old tag ids from the first version are renamed so nobody loses what they already own.
 const OLD_TAG_IDS = { newbie: 'ghost', chill: 'candy-corn', lurker: 'cobweb', snacky: 'pumpkin-spice', 'night-owl': 'black-cat', gamer: 'bat-wing', 'meme-lord': 'trick-or-treat', vibes: 'witch-brew', 'big-brain': 'haunted', speedrunner: 'skeleton-crew', 'cozy-fire': 'jack-o-lantern', sunburst: 'vampire-kiss', 'warm-legend': 'headless-horseman', 'golden-goat': 'midnight-reaper' };
+// Each limited show tag comes with its own animated profile background.
+const EVENT_FX = { 'show-live': 'bg-overdrive', 'show-halloween': 'bg-bloodmoon' };
 const tagById = (id) => TAGS.find((t) => t.id === id);
 const rarityOf = (id) => RARITIES.find((r) => r.id === id);
 
@@ -728,6 +745,7 @@ function economyFor(u) {
   return {
     coins: u.coins,
     nextSpinAt: u.lastSpin ? u.lastSpin + spinCooldown() : 0,
+    freeRolls: u.freeRolls || 0,
     equippedFx: fxOf(u),
     owned: u.tags,
     equipped: u.tag || null,
@@ -740,7 +758,7 @@ function economyFor(u) {
 const economyInfo = () => ({
   wheel: WHEEL.map((s) => s.coins),
   rarities: RARITIES,
-  packs: PACKS.map((p) => ({ id: p.id, name: p.name, icon: p.icon, blurb: p.blurb, until: p.until || 0, closed: packClosed(p) })),
+  packs: PACKS.map((p) => ({ id: p.id, name: p.name, icon: p.icon, blurb: p.blurb, until: p.until || 0, closed: packClosed(p), noShop: !!p.noShop })),
   halloweenEnd: HALLOWEEN_END,
   tags: TAGS,
 });
@@ -764,10 +782,12 @@ app.post('/api/machine/roll', auth, (req, res) => {
   if (rateLimited('roll:' + u.id, 20, 60000)) return res.status(429).json({ error: 'Slow down a little' });
   const pack = PACKS.find((p) => p.id === String(req.body.pack || 'dogs'));
   if (!pack) return res.status(400).json({ error: 'Pick a pack first' });
+  if (pack.noShop) return res.status(400).json({ error: 'Those tags are only given out at live shows' });
   if (packClosed(pack)) return res.status(400).json({ error: `The ${pack.name} left the shop. It was only here for Halloween` });
   const cost = currentCost();
-  if (u.coins < cost) return res.status(400).json({ error: `You need ${cost} coins to open a pack` });
-  u.coins -= cost;
+  const free = (u.freeRolls || 0) > 0;
+  if (!free && u.coins < cost) return res.status(400).json({ error: `You need ${cost} coins to open a pack` });
+  if (free) u.freeRolls--; else u.coins -= cost;
   const luck = eventMult('luck');
   const rarity = pickWeighted(RARITIES, (r) => luckyChance(r, luck));
   const pool = TAGS.filter((t) => t.pack === pack.id && t.rarity === rarity.id);
@@ -980,11 +1000,18 @@ app.post('/api/users/:id/tags', auth, (req, res) => {
   const take = req.body.action === 'take';
   const list = req.body.pack ? TAGS.filter((t) => t.pack === String(req.body.pack)) : TAGS.filter((t) => t.id === String(req.body.tag || ''));
   if (!list.length) return res.status(400).json({ error: 'Pick a tag or a pack first' });
+  if (list.some((t) => t.limited) && !isOwner(req.user)) return res.status(403).json({ error: 'Only the Owner can give or take the limited event tags' });
   const changed = [];
   for (const t of list) {
     const has = target.tags.includes(t.id);
     if (take && has) { target.tags = target.tags.filter((x) => x !== t.id); if (target.tag === t.id) target.tag = null; if (t.kind && target.fx && target.fx[t.kind] === t.id) delete target.fx[t.kind]; changed.push(t); }
     else if (!take && !has) { target.tags.push(t.id); changed.push(t); }
+    // a show tag and its profile animation go together
+    const fxId = EVENT_FX[t.id], ft = fxId && tagById(fxId);
+    if (ft && !list.includes(ft)) {
+      if (take && target.tags.includes(ft.id)) { target.tags = target.tags.filter((x) => x !== ft.id); if (target.fx && target.fx.bg === ft.id) delete target.fx.bg; }
+      else if (!take && !target.tags.includes(ft.id)) target.tags.push(ft.id);
+    }
   }
   if (changed.length) audit(req.user, `${take ? 'took' : 'gave'} ${changed.length > 3 ? changed.length + ' tags' : changed.map((t) => t.name).join(', ')} ${take ? 'from' : 'to'} ${target.username}`);
   save();
@@ -1618,7 +1645,7 @@ function startEvent(by, type, body) {
     for (const u of Object.values(db.users)) { econ(u); u.coins = Math.min(1e9, u.coins + 25 + crypto.randomInt(0, 376)); }
     text = `${def.icon} ${def.name}! Everyone just got a random treat of 25 to 400 coins. Check your coins!`;
   } else if (type === 'freepack') {
-    const open = PACKS.filter((p) => !packClosed(p)), luck = eventMult('luck');
+    const open = PACKS.filter((p) => !packClosed(p) && !p.noShop), luck = eventMult('luck');
     for (const u of Object.values(db.users)) {
       econ(u);
       const pack = open[crypto.randomInt(0, open.length)];
@@ -2475,6 +2502,156 @@ app.post('/api/minigame/finish', auth, (req, res) => {
   broadcast({ t: 'members' });
   res.json({ won: true, time, prize, ...economyFor(u) });
 });
+
+/* ---------------------------------------------------------------- live show
+   A long, hosted event with music, sound effects, trivia, reflex rounds, prize drops and a finale. The rules live in showengine.js
+   (shared with the preview). The Owner can let Admins run shows. */
+
+const SHOW = require('./showengine');
+const canRunShow = (u) => isOwner(u) || (isAdmin(u) && db.showAdmins);
+const needShowHost = (req, res, next) => (canRunShow(req.user) ? next() : res.status(403).json({ error: 'Only the Owner can run a show (or Admins, if the Owner allows it)' }));
+const liveShow = () => (db.show && !db.show.closed ? db.show : null);
+
+function pickShowTag() {
+  const rs = RARITIES.filter((r) => r.id !== 'croma');
+  for (let tries = 0; tries < 6; tries++) {
+    const r = pickWeighted(rs, (x) => x.chance);
+    const pool = TAGS.filter((t) => t.rarity === r.id && !t.kind && !t.limited && !packClosed(PACKS.find((p) => p.id === t.pack) || {}));
+    if (pool.length) return pool[crypto.randomInt(0, pool.length)].id;
+  }
+  return null;
+}
+
+// Hands out an award from the show: coins, free machine spins, a tag. Returns a short sentence.
+function giveShowAward(userId, a) {
+  const user = db.users[userId]; if (!user) return '';
+  const u = econ(user), bits = [];
+  if (a.coins) { u.coins = Math.min(1e9, u.coins + a.coins); bits.push(`${a.coins.toLocaleString('en-US')} coins`); }
+  if (a.spins) { u.freeRolls = Math.min(999, (u.freeRolls || 0) + a.spins); bits.push(`${a.spins} free machine spin${a.spins === 1 ? '' : 's'}`); }
+  if (a.evTag) {
+    const et = tagById(a.evTag), fxt = tagById(EVENT_FX[a.evTag]);
+    if (et && !u.tags.includes(et.id)) { u.tags.push(et.id); bits.push(`the limited ${et.icon} ${et.name} tag`); }
+    if (fxt && !u.tags.includes(fxt.id)) { u.tags.push(fxt.id); bits.push(`the ${fxt.icon} ${fxt.name} profile animation`); }
+  }
+  if (a.tag === true) a = Object.assign({}, a, { tag: pickShowTag() });
+  if (a.tag) {
+    const t = tagById(a.tag), r = t && rarityOf(t.rarity);
+    if (t) { if (u.tags.includes(t.id)) { u.coins = Math.min(1e9, u.coins + r.refund); bits.push(`${r.refund} coins (you already had ${t.name})`); } else { u.tags.push(t.id); bits.push(`the ${t.icon} ${t.name} tag`); } }
+  }
+  sendTo(userId, { t: 'show', kind: 'award', text: bits.join(' + ') });
+  return bits.join(' + ');
+}
+
+function showTickOnce() {
+  const sh = db.show; if (!sh || sh.closed) return;
+  const now = Date.now(), idx = SHOW.stepIndex(sh, now);
+  if (sh._idx !== idx) { sh._idx = idx; broadcast({ t: 'show', kind: 'step' }); }
+  if (!sh.paid && now >= sh.finaleAt) {
+    // Work out who already holds a limited tag BEFORE this show's tag is handed out.
+    const holders = new Set(Object.values(db.users).filter((u) => (u.tags || []).some((t) => { const d = tagById(t); return d && d.limited; })).map((u) => u.id));
+    const ledger = SHOW.payout(sh, pickShowTag, holders);
+    for (const l of ledger) giveShowAward(l.userId, { coins: l.coins, spins: l.spins, tag: l.tag, evTag: l.evTag });
+    // Everyone who is online for the show gets the limited tag too, even if they never opened the stage.
+    const got = new Set(ledger.map((l) => l.userId)), evTag = sh.opts.theme === 'halloween' ? 'show-halloween' : 'show-live';
+    for (const uid of online) if (!got.has(uid) && db.users[uid]) giveShowAward(uid, { evTag, coins: holders.has(uid) ? sh.opts.returnCoins : 0 });
+    const top = (sh.results || []).slice(0, 3);
+    db.lastShow = { id: sh.id, endedAt: now, results: (sh.results || []).slice(0, 10) };
+    if (top.length) {
+      const host = db.users[sh.by] || Object.values(db.users).find((x) => isOwner(x));
+      if (host) tellEveryone(host, `🏆 The show is over! 🥇 ${top[0].name} (${top[0].score} pts)${top[1] ? ' · 🥈 ' + top[1].name : ''}${top[2] ? ' · 🥉 ' + top[2].name : ''}. Thanks for playing everyone!`);
+    }
+    save(); broadcast({ t: 'show', kind: 'step' }); broadcast({ t: 'members' });
+  }
+  if (now >= sh.endsAt + 5000) { sh.closed = true; save(); broadcast({ t: 'show', kind: 'end' }); }
+}
+setInterval(() => { try { showTickOnce(); } catch (e) { console.error('show tick: ' + (e && e.stack || e)); } }, 1000).unref();
+
+function showResponse(u) {
+  const sh = liveShow();
+  return {
+    canRun: canRunShow(u), owner: isOwner(u), admins: db.showAdmins, now: Date.now(),
+    show: sh ? Object.assign(SHOW.view(sh, u.id, Date.now()), { by: sh.byName, length: sh.opts.length }) : null,
+    last: db.lastShow,
+    presets: Object.entries(SHOW.PRESETS).map(([id, p]) => ({ id, label: p.label })),
+    defaults: SHOW.DEFAULTS, lead: SHOW.LEAD_MS,
+  };
+}
+
+app.get('/api/show', auth, (req, res) => res.json(showResponse(req.user)));
+
+app.post('/api/show/start', auth, needShowHost, (req, res) => {
+  if (liveShow()) return res.status(400).json({ error: 'A show is already running. Stop it first' });
+  const sh = SHOW.makeShow(req.body || {}, Date.now());
+  sh.by = req.user.id; sh.byName = req.user.username;
+  db.show = sh;
+  audit(req.user, `started a ${sh.opts.theme === 'halloween' ? 'Halloween ' : ''}live show (${SHOW.PRESETS[sh.opts.length].label})`);
+  tellEveryone(req.user, `${sh.opts.theme === 'halloween' ? '💀 HALLOWEEN LIVE SHOW' : '⚡ LIVE SHOW'} starting in ${Math.round(SHOW.LEAD_MS / 1000)} seconds. Trivia, reflexes, loot drops and real prizes. Hit Join on the bar at the top. 1st place takes ${sh.opts.prizes[0].toLocaleString('en-US')} coins.`);
+  save();
+  broadcast({ t: 'show', kind: 'start', theme: sh.opts.theme });
+  res.json(showResponse(req.user));
+});
+
+app.post('/api/show/stop', auth, needShowHost, (req, res) => {
+  const sh = liveShow();
+  if (!sh) return res.status(404).json({ error: 'There is no show running' });
+  sh.closed = true;
+  audit(req.user, 'stopped the live show');
+  tellEveryone(req.user, '🎉 The live show was ended early. See you at the next one!');
+  save();
+  broadcast({ t: 'show', kind: 'end' });
+  res.json(showResponse(req.user));
+});
+
+app.post('/api/show/announce', auth, needShowHost, (req, res) => {
+  const sh = liveShow();
+  if (!sh) return res.status(404).json({ error: 'There is no show running' });
+  if (rateLimited('showann:' + req.user.id, 20, 60000)) return res.status(429).json({ error: 'Slow down a little' });
+  const text = String((req.body || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!text) return res.status(400).json({ error: 'Type something to announce' });
+  sh.announce = { text, ts: Date.now(), by: req.user.username };
+  audit(req.user, 'made a live show announcement');
+  save();
+  broadcast({ t: 'show', kind: 'announce', text, by: req.user.username });
+  res.json({ ok: true });
+});
+
+app.put('/api/owner/show-admins', auth, ownerOnly, (req, res) => {
+  db.showAdmins = !!req.body.enabled;
+  audit(req.user, db.showAdmins ? 'let Admins run live shows' : 'stopped Admins from running live shows');
+  save();
+  res.json(showResponse(req.user));
+});
+
+function showAction(fn) {
+  return (req, res) => {
+    const sh = liveShow();
+    if (!sh) return res.status(404).json({ error: 'There is no show right now' });
+    if (rateLimited('show:' + req.user.id, 600, 60000)) return res.status(429).json({ error: 'Slow down a little' });
+    const r = fn(sh, req, Date.now());
+    if (r.error) return res.status(400).json({ error: r.error });
+    save();
+    res.json(r);
+  };
+}
+app.post('/api/show/join', auth, showAction((sh, req) => {
+  if (Date.now() >= sh.endsAt) return { error: 'The show is over' };
+  const r = SHOW.join(sh, req.user.id, req.user.username);
+  if (r.joined) questBump(econ(req.user), 'arcade');
+  return { ok: true, joined: r.joined };
+}));
+app.post('/api/show/answer', auth, showAction((sh, req, now) => SHOW.answer(sh, req.user.id, req.body || {}, now)));
+app.post('/api/show/react', auth, showAction((sh, req, now) => SHOW.react(sh, req.user.id, req.body || {}, now)));
+app.post('/api/show/run', auth, showAction((sh, req, now) => SHOW.run(sh, req.user.id, req.body || {}, now)));
+app.post('/api/show/simon', auth, showAction((sh, req, now) => SHOW.simon(sh, req.user.id, req.body || {}, now)));
+app.post('/api/show/bridge', auth, showAction((sh, req, now) => SHOW.bridge(sh, req.user.id, req.body || {}, now)));
+app.post('/api/show/pull', auth, showAction((sh, req, now) => SHOW.pull(sh, req.user.id, req.body || {}, now)));
+app.post('/api/show/claim', auth, showAction((sh, req, now) => {
+  const r = SHOW.claim(sh, req.user.id, req.body || {}, now);
+  if (r.ok && r.award) r.text = giveShowAward(req.user.id, r.award);
+  if (r.ok && r.award) { broadcast({ t: 'show', kind: 'step' }); }
+  return r;
+}));
+app.post('/api/show/tap', auth, showAction((sh, req, now) => SHOW.tap(sh, req.user.id, req.body || {}, now)));
 
 /* ------------------------------------------------------------ community panel
    For the Community Manager (and Admins and the Owner). */

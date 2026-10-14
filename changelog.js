@@ -122,4 +122,21 @@ module.exports = [
   { id: 'v21', date: '2026-10-13', title: 'Welcome animation', notes: [
     'A new cinematic welcome screen plays when you open the link: "Welcome to Warms World... Get ready". New visitors then log in or register, and members go straight into the chat. You press a button to enter when it finishes',
   ] },
+  { id: 'v22', date: '2026-10-13', title: 'Live Show: a big hosted event', notes: [
+    'New 🎉 Live Show! A hosted event with music, sound effects, trivia, party games, quick math, prize drops, dance breaks and a finale with a podium. The Owner starts it from the Owner Panel; it runs for about 8, 13 or 19 minutes',
+    '💀 There is a Halloween version too: horror trivia, dark music, a blood-red look with fog and flickering lights. The Owner picks the neon Live Show or the Halloween one when starting',
+    'Everyone who joins gets coins. The top three get big coin prizes and free machine spins, and the winner also gets a random tag (never a Croma)',
+    '🏅 Limited event tags: everyone who joins a show, or is online when it ends, gets that show\'s tag. ⚡ Neon Overdrive for the neon show and 🌕 Blood Moon Rave for the Halloween one. Each one also unlocks its own animated profile background: 🌐 Overdrive Grid (a synthwave sunset over a neon grid racing at you, with neon rain and a color-cycling glow) and 🩸 Crimson Eclipse (a blood moon over a graveyard with fog, flying bats and red lightning). Wear them from My Tags. They are not in the shop, and only the Owner can give them out to others. Next time a show runs, people who already hold a limited tag get bonus coins for coming back',
+    'Free machine spins are new: they open a pack without spending coins. You will see "FREE" on the Open Pack button',
+    'The Owner can let Admins start and stop shows too, set every prize, and play their own music link',
+  ] },
+  { id: 'v23', date: '2026-10-14', title: 'Video calls, show upgrades and speed fixes', notes: [
+    '🎥 Private calls can now be video calls. Press the 🎥 button next to a friend, or turn your camera on or off during any private call with the Camera button',
+    'Live Show has new party games: 🚦 Red Light, Green Light (run on green, freeze on red), 🎛️ Simon Says (copy the pattern), 🌉 Glass Bridge (pick the safe panel, and every broken panel is shown to everyone) and 🪢 Tug of War (two teams, winners get coins). In Red Light, Green Light and Glass Bridge everyone\'s picture shows on a shared map, so you can watch each other run, fall and cross. They replace the old reflex test and hype meter',
+    'Live Show questions are now mostly video game trivia and proxy / internet questions (Halloween adds horror games), and the math rounds are easier',
+    '📣 The Owner (and Admins who run the show) get an announcement panel inside the Live Show. Drag it anywhere, type, press Send, and everyone watching sees a banner with a sound',
+    'The old "Warms" welcome flash that showed after logging in is gone. The new welcome screen replaces it',
+    'Faster chat: less lag when people come online or go offline, and the animated rings only move on profiles now',
+    'Profile pictures no longer vanish: if a picture ever cannot load, your first letter shows instead, and uploaded pictures are shrunk so they load fast',
+  ] },
 ];
