@@ -3880,7 +3880,34 @@ function openArcade() {
 
 /* ------------------------------------------------------------------ boot */
 
+/* Welcome splash: plays for everyone on every visit, then new visitors get the login and members go straight in. */
+const SPLASH_HTML = $('splash') ? $('splash').outerHTML : '';
+window.replaySplash = () => { if ($('splash') || !SPLASH_HTML) return; document.body.insertAdjacentHTML('afterbegin', SPLASH_HTML); splashSetup(true); };
+function splashSetup(force) {
+  const sp = $('splash'); if (!sp) return null;
+  if (!force && navigator.webdriver && !/[?&]splash=1/.test(location.search)) { sp.remove(); return null; }
+  const t = $('spTitle'); 'Warms World'.split('').forEach((c, i) => t.append(h('span', { style: `--i:${i}` }, c === ' ' ? '\u00a0' : c)));
+  const st = sp.querySelector('.sp-stars');
+  for (let i = 0; i < 40; i++) st.append(h('i', { style: `left:${rnd(100)}%;top:${rnd(100)}%;--d:${(rnd(30) / 10).toFixed(1)}s;--s:${2 + rnd(4)}px` }));
+  const bu = $('spBurst');
+  for (let i = 0; i < 46; i++) { const a = (i / 46) * Math.PI * 2 + Math.random() * .3, d = 140 + rnd(260); bu.append(h('i', { style: `--bx:${(Math.cos(a) * d).toFixed(0)}px;--by:${(Math.sin(a) * d).toFixed(0)}px;--bs:${3 + rnd(6)}px;--bh:${rnd(60)};--bd:${(rnd(30) / 100).toFixed(2)}s` })); }
+  const pct = $('spPct'), t0 = Date.now(), calm = calmMotion(), total = calm ? 900 : 6200;
+  const tick = setInterval(() => { const x = Math.max(0, Math.min(1, (Date.now() - t0 - (calm ? 0 : 3700)) / (calm ? total : 1800))); pct.textContent = Math.round(x * 100) + '%'; if (x >= 1) clearInterval(tick); }, 60);
+  document.body.classList.add('splashing');
+  const started = Date.now();
+  let leaving = false;
+  const done = new Promise((res) => {
+    const leave = () => { if (leaving) return; leaving = true; clearInterval(tick); sp.classList.add('out'); document.body.classList.remove('splashing'); setTimeout(() => { sp.remove(); res(); }, 850); };
+    $('spEnter').addEventListener('click', () => { uiSound('open'); leave(); });
+    window.__splashLeave = leave;
+  });
+  return done;
+}
+
 (async function boot() {
-  if (!state.token) return showAuth();
-  try { await start(); } catch (e) { showAuth(); }
+  const splash = splashSetup();
+  let authNeeded = !state.token;
+  if (!authNeeded) { try { await start(); } catch (e) { authNeeded = true; } }
+  if (splash) await splash;
+  if (authNeeded) showAuth();
 })();

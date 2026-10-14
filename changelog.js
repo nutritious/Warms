@@ -119,4 +119,7 @@ module.exports = [
     'New ✨ Profile Effects pack in the shop (Tag Packs): avatar rings (Sparkle, Rainbow, Galaxy...), name effects (Neon, Fire, Glitch, Gold...) and moving profile backgrounds with floating particles (Aurora, Starfield, Lava, Crimson Slash...). Wear them from My Tags',
     'Avatar rings show everywhere your picture appears, and name effects and backgrounds show on your profile page',
   ] },
+  { id: 'v21', date: '2026-10-13', title: 'Welcome animation', notes: [
+    'A new cinematic welcome screen plays when you open the link: "Welcome to Warms World... Get ready". New visitors then log in or register, and members go straight into the chat. You press a button to enter when it finishes',
+  ] },
 ];
