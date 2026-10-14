@@ -2260,3 +2260,31 @@ body.staging .banner { display: none !important; }
 @media (min-width: 560px) { .showctl label:not(.own-check) { grid-template-columns: 1fr auto; align-items: center; column-gap: 10px; } }
 
 .showctl select, .showctl input { max-width: 100%; min-width: 0; }
+
+/* ---- the live show screen scales with the window height so it always fits ---- */
+.st-body { place-items: safe center; padding: clamp(6px, 1.6vh, 16px); }
+.st-top { padding: clamp(6px, 1.2vh, 12px) 14px; }
+.st-board { padding: 6px 12px; font-size: 13px; }
+.st-body h1 { font-size: clamp(26px, min(6vw, 9vh), 58px); }
+.st-body h2 { font-size: clamp(18px, min(4vw, 4.4vh), 38px); margin: clamp(4px, 1vh, 10px) 0 clamp(6px, 1.6vh, 18px); }
+.st-body p { font-size: clamp(14px, 2.4vh, 18px); }
+.lb-clock { font-size: clamp(40px, min(12vw, 16vh), 110px); }
+.tr-count { width: clamp(40px, 7vh, 64px); height: clamp(40px, 7vh, 64px); font-size: clamp(20px, 3.4vh, 30px); }
+.tr-opts { gap: clamp(6px, 1.2vh, 12px); }
+.tr-opt { padding: clamp(8px, 1.8vh, 18px) 14px; font-size: clamp(15px, 2.6vh, 20px); }
+.mt-q { font-size: clamp(26px, min(8vw, 9vh), 76px) !important; }
+.go-pad { width: min(360px, 80vw, 42vh); height: min(360px, 80vw, 42vh); font-size: clamp(18px, 3.2vh, 26px); }
+.dn-row { font-size: clamp(36px, 8vh, 64px); }
+.rl { gap: clamp(6px, 1.4vh, 14px); }
+.rl-light { width: clamp(46px, 12vh, 120px); height: clamp(46px, 12vh, 120px); border-width: 4px; }
+.rl-word { font-size: clamp(18px, 3.4vh, 28px); }
+.rl-field { height: clamp(110px, 26vh, 270px); }
+.rl-btn { padding: clamp(10px, 2.2vh, 22px); font-size: clamp(18px, 3.2vh, 26px); }
+.gb { gap: clamp(3px, .6vh, 6px); }
+.gb-cell { height: clamp(18px, 3.7vh, 34px); }
+.gb-map { padding: clamp(18px, 3vh, 30px) 0 clamp(22px, 4vh, 38px); }
+.sm, .gbw, .tg { gap: clamp(6px, 1.4vh, 14px); }
+.sm-grid { width: min(320px, 100%, 34vh); gap: clamp(6px, 1.2vh, 12px); }
+.podium { margin: clamp(6px, 1.4vh, 18px) 0; }
+.pod { padding: clamp(6px, 1.4vh, 14px) 14px; }
+.fn-list { gap: 3px; } .fn-row { padding: clamp(2px, .6vh, 6px) 12px; font-size: clamp(12px, 2.2vh, 15px); }
