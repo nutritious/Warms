@@ -2248,3 +2248,15 @@ body.staging .banner { display: none !important; }
 .profilecard.ev-bloodmoon .pc-av { box-shadow: 0 0 0 3px #ff1a2e, 0 0 24px #ff1a2e; animation: evPulse 1.6s ease-in-out infinite alternate; }
 @keyframes evPulse { from { box-shadow: 0 0 0 3px #7a0012, 0 0 10px #7a0012; } to { box-shadow: 0 0 0 3px #ff1a2e, 0 0 30px #ff1a2e; } }
 @media (prefers-reduced-motion: reduce) { .profilecard.ev-overdrive, .profilecard.ev-bloodmoon, .pc-fx.t-bloodmoon::before, .pc-fx.t-overdrive::before { animation: none; } }
+
+/* compact show setup window: fits small screens, scrolls if it has to */
+.modal.showctl { width: min(520px, calc(100vw - 24px)); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 14px 16px; }
+.showctl h2 { margin: 0 0 2px; font-size: 18px; }
+.showctl > p.dim { margin: 0 0 6px; font-size: 12px; }
+.showctl label { margin: 4px 0; font-size: 12px; gap: 2px; }
+.showctl input[type="number"], .showctl input[type="text"], .showctl select { padding: 5px 8px; font-size: 13px; }
+.showctl hr { margin: 8px 0; }
+.showctl .row-end { position: sticky; bottom: -14px; padding: 8px 0 2px; background: inherit; }
+@media (min-width: 560px) { .showctl label:not(.own-check) { grid-template-columns: 1fr auto; align-items: center; column-gap: 10px; } }
+
+.showctl select, .showctl input { max-width: 100%; min-width: 0; }

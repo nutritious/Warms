@@ -4583,7 +4583,7 @@ async function openShowControl() {
   if (!d.canRun) return toast('Only the Owner can run a show');
   const o = d.defaults, live = d.show;
   const num = (v, w) => h('input', { type: 'number', min: 0, value: v, style: `width:${w || 90}px` });
-  const theme = h('select', {}, h('option', { value: 'party' }, '⚡ Live show (neon)'), h('option', { value: 'halloween' }, '💀 Halloween show (horror trivia, dark music and look)'));
+  const theme = h('select', {}, h('option', { value: 'party' }, '⚡ Live show (neon)'), h('option', { value: 'halloween' }, '💀 Halloween show (dark)'));
   const len = h('select', {}, d.presets.map((p) => h('option', { value: p.id, selected: p.id === o.length || null }, p.label)));
   const pz = [num(o.prizes[0]), num(o.prizes[1]), num(o.prizes[2])], sp = [num(o.spins[0], 60), num(o.spins[1], 60), num(o.spins[2], 60)];
   const part = num(o.partCoins), hype = num(o.hypeCoins), back = num(o.returnCoins);
@@ -4592,7 +4592,7 @@ async function openShowControl() {
   const url = h('input', { type: 'text', placeholder: 'https://… link to an audio file (.mp3, .ogg…)', maxlength: 400 });
   const box = h('div', { class: 'modal showctl' },
     h('h2', {}, '🎉 Live Show'),
-    h('p', { class: 'dim' }, 'A hosted event with music, sound effects, trivia, reflex rounds, prize drops, a hype meter and a finale. Everyone joins from the LIVE bar at the top of the chat.'));
+    h('p', { class: 'dim' }, 'Music, trivia, party games, prize drops and a finale. Everyone joins from the LIVE bar at the top.'));
   if (live) {
     box.append(h('div', { class: 'sc-live' }, h('b', {}, '🔴 A show is running'), h('div', {}, `${live.players} player${live.players === 1 ? '' : 's'} · started by ${live.by || 'the host'}`)),
       h('div', { class: 'row-end' },

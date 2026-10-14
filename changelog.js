@@ -136,6 +136,7 @@ module.exports = [
     'Live Show questions are now mostly video game trivia and proxy / internet questions (Halloween adds horror games), and the math rounds are easier',
     '📣 The Owner (and Admins who run the show) get an announcement panel inside the Live Show. Drag it anywhere, type, press Send, and everyone watching sees a banner with a sound',
     'The old "Warms" welcome flash that showed after logging in is gone. The new welcome screen replaces it',
+    'The Live Show setup window is smaller now and fits on small screens',
     'Faster chat: less lag when people come online or go offline, and the animated rings only move on profiles now',
     'Profile pictures no longer vanish: if a picture ever cannot load, your first letter shows instead, and uploaded pictures are shrunk so they load fast',
   ] },
